@@ -11,7 +11,7 @@ in
   pkgs.devshell.mkShell {
     name = "ichuchu";
     motd = ''
-      Ichuchu: build-apk debug | build-apk release
+      Ichuchu: build-apk debug | release | signed-release
     '';
     env = [
       {
@@ -65,6 +65,7 @@ in
       python3
       unzip
       shellcheck
+      actionlint
       zlib
       ktfmt
       ktlint
@@ -74,7 +75,7 @@ in
     commands = [
       {
         name = "build-apk";
-        help = "Rebuild arm64 JNI and assemble a debug or unsigned release APK";
+        help = "Build debug, release, or signed-release (interactive or CI)";
         command = ''exec bash "$(git rev-parse --show-toplevel)/build-support/build-apk.sh" "$@"'';
       }
     ];

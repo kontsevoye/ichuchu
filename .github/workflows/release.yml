@@ -25,14 +25,16 @@ jobs:
       - uses: DeterminateSystems/magic-nix-cache-action@main
 
       - name: nix shell
-        run: nix develop -L --verbose
+        run: nix develop --command true
 
       - name: parse version from tag
         id: version
         if: ${{ github.ref_type == 'tag' || inputs.release_tag != '' }}
+        env:
+          RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || inputs.release_tag }}
         run: |
           set -e
-          TAG="${{ github.ref_type == 'tag' && github.ref_name || inputs.release_tag }}"
+          TAG="$RELEASE_TAG"
           VERSION="${TAG#v}"
           if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "::error::Tag '$TAG' is not a valid semver (expected MAJOR.MINOR.PATCH, optionally prefixed with 'v')"
@@ -45,26 +47,17 @@ jobs:
               exit 1
             fi
           done
-          echo "major=$MAJOR" >> "$GITHUB_OUTPUT"
-          echo "minor=$MINOR" >> "$GITHUB_OUTPUT"
-          echo "patch=$PATCH" >> "$GITHUB_OUTPUT"
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          {
+            echo "major=$MAJOR"
+            echo "minor=$MINOR"
+            echo "patch=$PATCH"
+            echo "version=$VERSION"
+          } >> "$GITHUB_OUTPUT"
           echo "Parsed version: $VERSION (major=$MAJOR minor=$MINOR patch=$PATCH)"
-
-      - name: build ichuchu_jni
-        run: |
-          nix develop -c bash -c '
-            set -e
-            cd zig-src
-            zig build -Doptimize=ReleaseSmall -Dtarget=aarch64-linux-android.24 jni
-          '
-
-      - name: generate release key
-        run: |
-          cd android/app/ && echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > key.jks
 
       - name: build android release artifacts (APK + AAB)
         env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
@@ -72,24 +65,17 @@ jobs:
           VERSION_MINOR: ${{ steps.version.outputs.minor }}
           VERSION_PATCH: ${{ steps.version.outputs.patch }}
           ANDROID_ABI_FILTERS: arm64-v8a
-        run: |
-          nix develop -c bash -c '
-            set -e
-            cd android
-            chmod +x ./gradlew
-            if [ -f local.properties ]; then chmod -w local.properties; fi
-            ./gradlew assembleRelease bundleRelease
-          '
+        run: nix develop --command build-apk signed-release --non-interactive --bundle
 
       - name: upload release
         if: ${{ github.ref_type == 'tag' || inputs.release_tag != '' }}
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_type == 'tag' && github.ref_name || inputs.release_tag }}
           target_commitish: ${{ github.sha }}
           draft: true
           files: |
-            ./android/app/build/outputs/apk/release/*.apk
-            ./android/app/build/outputs/bundle/release/*.aab
+            ./android/app/build/outputs/apk/release/app-release.apk
+            ./android/app/build/outputs/bundle/release/app-release.aab
           fail_on_unmatched_files: true
 

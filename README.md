@@ -62,12 +62,14 @@ From the checkout root, with Nix and flakes enabled:
 ```sh
 nix develop --command build-apk debug
 nix develop --command build-apk release
+nix develop --command build-apk signed-release
 ```
 
 The checked-in flake and lock provide the SDK/NDK, JDK, and Zig. Both commands
 rebuild arm64 JNI and verify that the APK contains the newly built native library.
 Outputs are in `android/app/build/outputs/apk/`; release APKs are unsigned unless
-release signing is configured.
+release signing is configured. `signed-release` prompts for credentials in a
+terminal and supports non-interactive CI secrets with `--non-interactive`.
 
 For an interactive shell, run `nix develop`, then `make apk` or `make release`. `make app` also installs and opens the debug build on a connected
 device; set `ANDROID_SERIAL` when selecting a device.

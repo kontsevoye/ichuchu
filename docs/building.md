@@ -9,6 +9,7 @@ compiler installation is required.
 ```sh
 nix develop --command build-apk debug
 nix develop --command build-apk release
+nix develop --command build-apk signed-release
 ```
 
 The default target is **arm64-v8a**, Android API 24+. Each command builds native
@@ -22,6 +23,9 @@ Outputs:
   standard Android debug key.
 - Release: `android/app/build/outputs/apk/release/app-release-unsigned.apk` by
   default. A fully configured Gradle release signer produces `app-release.apk`.
+- Signed release: `android/app/build/outputs/apk/release/app-release.apk`, verified
+  against the selected keystore certificate. `signed-artifacts.json` records its
+  SHA-256, certificate SHA-256 and version code.
 
 For interactive use:
 
@@ -64,27 +68,98 @@ VERSION_NAME=0.2.1-local VERSION_CODE=201006 nix develop --command build-apk rel
 
 ## Signing a release
 
-Keep the release keystore outside the checkout. To sign an unsigned build
-interactively, enter the Nix shell and use its Android Build Tools:
+### Interactive terminal
+
+Keep the keystore outside the checkout. This single command rebuilds JNI,
+assembles a release, signs it and verifies the signature:
 
 ```sh
-nix develop
-"$ANDROID_HOME/build-tools/36.0.0/apksigner" sign \
-  --ks "$HOME/.local/share/android-signing/ichuchu-release.jks" \
-  --out android/app/build/outputs/apk/release/ichuchu-signed.apk \
-  android/app/build/outputs/apk/release/app-release-unsigned.apk
-"$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose --print-certs \
-  android/app/build/outputs/apk/release/ichuchu-signed.apk
+VERSION_NAME=0.2.1-local VERSION_CODE=201006 \
+  nix develop --command build-apk signed-release --interactive \
+    --keystore "$HOME/.local/share/android-signing/ichuchu-release.jks"
 ```
 
-`apksigner` requests the keystore password interactively. Do not put passwords
-in command arguments, checked-in files, or chat. Use the same signing key and a
-higher `VERSION_CODE` to update an existing installation.
+Passwords are entered with terminal echo disabled. Enter an empty private-key
+password to reuse the keystore password. A single private-key alias is selected
+automatically; use `--alias NAME` or `KEY_ALIAS` for a multi-key keystore.
 
-CI can use the existing `KEYSTORE_PASSWORD`, `KEY_ALIAS`, and `KEY_PASSWORD`
-environment variables together with `KEYSTORE_FILE` pointing to the external
-keystore. The legacy `android/app/key.jks` location is still supported. Without
-a complete signing configuration, Gradle assembles an unsigned release.
+Without `--interactive` or `--non-interactive`, terminal input enables prompts;
+`CI=true` or non-terminal input disables them. `make signed-release` is also
+available from inside `nix develop`.
+
+### Non-interactive / GitHub Actions
+
+```yaml
+- name: Build verified signed APK
+  env:
+    KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+    KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+    KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+    KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+    VERSION_NAME: 0.2.2
+    VERSION_CODE: 202000
+  run: nix develop --command build-apk signed-release --non-interactive
+```
+
+Supply these inputs through the process environment:
+
+| Input | Meaning |
+| --- | --- |
+| `KEYSTORE_BASE64` | Base64-encoded JKS/PKCS12 content, typically an Actions secret. |
+| `KEYSTORE_FILE` / `--keystore` | Existing keystore path, as an alternative to Base64. |
+| `KEYSTORE_PASSWORD` | Required keystore password. |
+| `KEYSTORE_PASSWORD_FILE` | UTF-8 password file instead of the password environment variable. One trailing newline is removed. |
+| `KEY_ALIAS` / `--alias` | Optional with exactly one private key; required when selecting among multiple keys. |
+| `KEY_PASSWORD` | Private-key password; defaults to the keystore password. |
+| `KEY_PASSWORD_FILE` | Password-file alternative for a separate private-key password. |
+
+Use one keystore source and one source per password. Keep password files outside
+Git with mode 0600. Missing inputs and an invalid store password stop the command
+before compilation; the signed mode never falls back to unsigned success.
+
+To configure repository secrets with GitHub CLI, explicitly select your repository:
+
+```sh
+base64 < "$HOME/.local/share/android-signing/ichuchu-release.jks" \
+  | gh secret set KEYSTORE_BASE64 --repo OWNER/REPO
+gh secret set KEYSTORE_PASSWORD --repo OWNER/REPO
+# Set KEY_PASSWORD too if the private key uses a different password.
+```
+
+Base64 is an encoding, so keep its value in an Actions secret. See
+[GitHub's secret configuration documentation](https://docs.github.com/en/actions/how-tos/write-workflows/choose-what-workflows-do/use-secrets).
+The checked-in release and nightly workflows already use this signing command
+and publish only the explicit signed APK path, not an unsigned-APK glob.
+
+### Bundle and verification
+
+Add `--bundle` to build, sign and verify the release AAB as well:
+
+```sh
+nix develop --command build-apk signed-release --non-interactive --bundle
+```
+
+The signed AAB is `android/app/build/outputs/bundle/release/app-release.aab`.
+The APK is checked with `apksigner`, its certificate is matched to the selected
+keystore entry, and app payloads are compared before/after signing. AABs are
+signed and verified with `jarsigner`.
+
+Signing secrets are removed from the JNI/Gradle build environment; only signing
+tools receive password environment variables. Password values are never command
+arguments. Gradle configuration caching is disabled. Base64 keystores are decoded
+into a mode-0600 file in a private temporary directory and removed on normal
+completion or handled failure. No passwords or keystore content are put in Nix
+expressions or saved in the repository.
+
+Use the same release key and increase `VERSION_CODE` when updating an existing
+installation. Direct Gradle signing through the legacy environment variables and
+`android/app/key.jks` remains compatible, but the command above keeps compilation
+separate from access to signing passwords.
+
+Run `nix develop --command python3 build-support/test-signing.py` for real
+JKS/PKCS12, APK/AAB, CI/password-file and interactive-PTY checks with disposable
+keys. Tests restore pre-existing signed outputs afterwards. Workflow syntax is
+checked with `actionlint .github/workflows/{release,nightly}.yml` inside the shell.
 
 ## Manual toolchain
 
