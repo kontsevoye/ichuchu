@@ -1,0 +1,31 @@
+*.iml
+.gradle
+.DS_Store
+.externalNativeBuild
+.cxx
+local.properties
+.agents/*
+!.agents/setup
+!.agents/resume
+.idea/
+.kotlin/
+.npm/
+.plans/
+.zig-cache/
+references/
+scripts/
+
+# Amp orbs
+.amp/portals/
+
+# Android
+android/app/src/main/jniLibs/
+android/app/key.jks
+/build
+/captures
+
+# Zig
+zig-src/.zig-cache/
+zig-src/zig-out/
+zig-out/
+.comview/
