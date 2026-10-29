@@ -3,13 +3,21 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "node:test";
+import { test, after } from "node:test";
 import { ASSET_NAMES, checkPreparedPlan, prepareArtifacts, publishRelease } from "./release.mjs";
 
 const plan = { tag: "v0.1.1", previousTag: "v0.1.0", sha: "a".repeat(40), existingTag: false,
   latest: true, versionName: "0.1.1", versionCode: 1001001 };
 const repository = "example/ichuchu";
-const artifacts = ASSET_NAMES.map((name) => `/tmp/${name}`);
+const publishFixture = mkdtempSync(join(tmpdir(), "ichuchu-publication-"));
+after(() => rmSync(publishFixture, { recursive: true, force: true }));
+const artifacts = ASSET_NAMES.map((name) => {
+  const path = join(publishFixture, name); writeFileSync(path, name); return path;
+});
+function asset(name) {
+  const bytes = readFileSync(artifacts[ASSET_NAMES.indexOf(name)]);
+  return { name, size: bytes.length, digest: `sha256:${createHash("sha256").update(bytes).digest("hex")}` };
+}
 
 function fakeGh({ release, failUpload = 0 } = {}) {
   const calls = [];
@@ -36,10 +44,10 @@ test("creates an annotated tag for the checked SHA and publishes only after both
   assert.equal(calls[1].input.type, "commit");
   assert.deepEqual(calls[2].input, { ref: "refs/tags/v0.1.1", sha: "b".repeat(40) });
   const releases = calls.filter(({ args }) => args[0] === "release");
-  assert.deepEqual(releases.map(({ args }) => args[1]), ["create", "upload", "upload", "edit"]);
+  assert.deepEqual(releases.map(({ args }) => args[1]), ["create", "upload", "upload", "upload", "edit"]);
   assert.ok(releases[0].args.includes("--draft"));
   assert.ok(releases[0].args.includes("--notes-start-tag"));
-  assert.ok(releases[3].args.includes("--draft=false"));
+  assert.ok(releases[4].args.includes("--draft=false"));
 });
 
 test("a completed release is immutable and a rerun is a no-op", () => {
@@ -50,9 +58,9 @@ test("a completed release is immutable and a rerun is a no-op", () => {
 });
 
 test("a partially uploaded draft resumes without replacing its tag or APK", () => {
-  const { gh, calls } = fakeGh({ release: { draft: true, assets: [{ name: ASSET_NAMES[0] }] } });
+  const { gh, calls } = fakeGh({ release: { draft: true, assets: [asset(ASSET_NAMES[0])] } });
   publishRelease({ ...plan, existingTag: true }, repository, artifacts, gh);
-  assert.deepEqual(calls.slice(1).map(({ args }) => args.slice(0, 2)), [["release", "upload"], ["release", "edit"]]);
+  assert.deepEqual(calls.slice(1).map(({ args }) => args.slice(0, 2)), [["release", "upload"], ["release", "upload"], ["release", "edit"]]);
   assert.equal(calls[1].args[3], artifacts[1]);
 });
 
@@ -60,13 +68,13 @@ test("second-asset upload failure leaves an unpublished draft, and retry complet
   const { gh, calls } = fakeGh({ failUpload: 2 });
   assert.throws(() => publishRelease(plan, repository, artifacts, gh), /Upload interrupted/);
   assert.ok(!calls.some(({ args }) => args[0] === "release" && args[1] === "edit"));
-  const retry = fakeGh({ release: { draft: true, assets: [{ name: ASSET_NAMES[0] }] } });
+  const retry = fakeGh({ release: { draft: true, assets: [asset(ASSET_NAMES[0])] } });
   publishRelease({ ...plan, existingTag: true }, repository, artifacts, retry.gh);
-  assert.equal(retry.calls.filter(({ args }) => args[1] === "upload").length, 1);
+  assert.equal(retry.calls.filter(({ args }) => args[1] === "upload").length, 2);
 });
 
 test("published incomplete releases are not modified", () => {
-  const { gh, calls } = fakeGh({ release: { draft: false, assets: [{ name: ASSET_NAMES[0] }] } });
+  const { gh, calls } = fakeGh({ release: { draft: false, assets: [asset(ASSET_NAMES[0])] } });
   assert.throws(() => publishRelease({ ...plan, existingTag: true }, repository, artifacts, gh), /refusing to modify/);
   assert.equal(calls.length, 1);
 });
@@ -98,9 +106,15 @@ test("publishing validates both signed payloads against the version plan and rec
   writeFileSync(join(apkDir, "output-metadata.json"), JSON.stringify(metadata));
   writeFileSync(join(apkDir, "app-release.apk"), apk); writeFileSync(join(aabDir, "app-release.aab"), aab);
   writeFileSync(join(apkDir, "signed-artifacts.json"), JSON.stringify({ version_code: plan.versionCode,
-    version_name: plan.versionName, certificate_sha256: "a".repeat(64), sha256: hash(apk), aab_sha256: hash(aab) }));
+    version_name: plan.versionName, package_name: metadata.applicationId, min_sdk: 24, abis: ["arm64-v8a"], certificate_sha256: "a".repeat(64), sha256: hash(apk), aab_sha256: hash(aab) }));
   const paths = prepareArtifacts(plan, cwd);
-  assert.deepEqual(paths.map((p) => readFileSync(p)), [apk, aab]);
+  assert.deepEqual(paths.slice(0, 2).map((p) => readFileSync(p)), [apk, aab]);
+  const update = JSON.parse(readFileSync(paths[2]));
+  assert.equal(update.schemaVersion, 1);
+  assert.equal(update.distribution, "github");
+  assert.equal(update.versionCode, plan.versionCode);
+  assert.equal(update.commit, plan.sha);
+  assert.deepEqual(update.artifacts, [{ abi: "arm64-v8a", name: "ichuchu.apk", size: apk.length, sha256: hash(apk) }]);
   assert.throws(() => prepareArtifacts({ ...plan, versionCode: plan.versionCode + 1 }, cwd), /metadata/);
   writeFileSync(join(aabDir, "app-release.aab"), "corrupted");
   assert.throws(() => prepareArtifacts(plan, cwd), /hash mismatch/);
@@ -117,5 +131,14 @@ test("the publish CLI rejects a local or manually triggered invocation before re
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /Publishing is only allowed/);
     assert.doesNotMatch(result.stderr, /synthetic-not-a-token/);
+  }
+});
+
+test("draft recovery rejects a changed APK before publishing mismatched update metadata", () => {
+  for (const existing of [{ ...asset(ASSET_NAMES[0]), digest: "sha256:" + "0".repeat(64) },
+    { name: ASSET_NAMES[0], size: 1 }, { ...asset(ASSET_NAMES[2]), digest: null }]) {
+    const { gh, calls } = fakeGh({ release: { draft: true, assets: [existing] } });
+    assert.throws(() => publishRelease({ ...plan, existingTag: true }, repository, artifacts, gh), /Existing draft/);
+    assert.equal(calls.length, 1);
   }
 });

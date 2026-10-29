@@ -31,3 +31,7 @@ zig-src/.zig-cache/
 zig-src/zig-out/
 zig-out/
 .comview/
+
+# Generated updater acceptance APKs; only the isolated test build uses these.
+android/app/src/updateTest/assets/*.apk
+android/app/src/updateTest/assets/*.apk.idsig

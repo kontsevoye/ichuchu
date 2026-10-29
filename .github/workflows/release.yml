@@ -40,6 +40,7 @@ jobs:
       - name: Build and test unsigned APK and AAB
         if: steps.version.outputs.skip != 'true'
         env:
+          ORG_GRADLE_PROJECT_enableSelfUpdate: "true"
           VERSION_NAME: ${{ steps.version.outputs.version_name }}
           VERSION_CODE: ${{ steps.version.outputs.version_code }}
         run: nix develop --no-update-lock-file --command bash build-support/check-android.sh

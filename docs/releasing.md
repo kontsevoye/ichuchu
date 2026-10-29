@@ -72,8 +72,8 @@ These overrides do not allocate release tags.
    recorded in `signed-artifacts.json`.
 5. Publication refreshes tags and verifies that the current plan still matches
    the checked SHA/version. It validates the signed files, creates an annotated
-   tag, creates a draft with generated notes, uploads `ichuchu.apk` and
-   `ichuchu.aab`, then publishes the complete draft.
+   tag, creates a draft with generated notes, uploads `ichuchu.apk`,
+   `ichuchu.aab` and signed-APK-derived `update.json`, then publishes the complete draft.
 
 Only the release job has `contents: write` and receives the Android signing
 secrets described in [building.md](building.md). GitHub publication uses the
@@ -108,3 +108,7 @@ Run the release/recovery regression tests without making GitHub writes:
 ```sh
 nix develop --command make check-release
 ```
+
+The check job explicitly sets `ORG_GRADLE_PROJECT_enableSelfUpdate=true` for its release build. Debug remains disabled. Publication derives schema-1 `update.json` from the verified signed APK (package, SDK, ABI, version, certificate and exact final size/hash), binds it to the checked commit, and uploads it before publishing. See [updating.md](updating.md).
+
+On partial-draft recovery, an already-uploaded APK or `update.json` must have a GitHub digest/size matching the checked local file. A rebuilt or re-signed different APK cannot be paired with a new manifest silently. Preserve/recover the original checked artifact; if unavailable, review and remove only the conflicting unpublished draft asset before retrying. Published assets are never changed.

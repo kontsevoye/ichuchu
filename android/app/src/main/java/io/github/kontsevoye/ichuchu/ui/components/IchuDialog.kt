@@ -29,6 +29,7 @@ import io.github.kontsevoye.ichuchu.ui.theme.IchuTypography
 fun IchuDialog(
     title: String,
     confirmLabel: String,
+    confirmEnabled: Boolean = true,
     onConfirm: () -> Unit,
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier,
@@ -85,6 +86,7 @@ fun IchuDialog(
                 }
                 IchuButton(
                     onClick = onConfirm,
+                    enabled = confirmEnabled,
                     bracketed = true,
                 ) {
                     IchuText(confirmLabel, style = typography.label, color = colors.onAccent)

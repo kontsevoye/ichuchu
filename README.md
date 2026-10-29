@@ -30,6 +30,7 @@ Ichuchu is a native Android SSH client powered by libghostty, a terminal-first C
 - configurable accessory keys and custom terminal actions
 - per-host post-connect actions that autorun a selected custom action after SSH/Mosh connects or reconnects
 - encrypted local import/export backups for SSH keys and server profiles
+- verified GitHub APK updates with Android confirmation and optional background checks
 - beautiful and working terminal renderer with fully working resize, scrollback, focus, modifier keys, mouse actions 
 
 ## Status
@@ -44,7 +45,8 @@ Checkout our [releases](https://github.com/kontsevoye/ichuchu/releases) and down
 Each checked push to `main` automatically publishes a SemVer release with signed
 `ichuchu.apk` and `ichuchu.aab`. `feat:` increments minor, breaking changes increment
 major, and other changes increment patch. There is one stable release stream.
-See [versioning, release checks and recovery](docs/releasing.md).
+See [versioning, release checks and recovery](docs/releasing.md) and
+[in-app updates](docs/updating.md).
 
 
 

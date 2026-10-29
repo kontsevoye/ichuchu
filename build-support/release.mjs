@@ -5,7 +5,7 @@ import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { androidVersion, planRelease } from "./version.mjs";
 
-export const ASSET_NAMES = ["ichuchu.apk", "ichuchu.aab"];
+export const ASSET_NAMES = ["ichuchu.apk", "ichuchu.aab", "update.json"];
 const runGh = (args, input) => execFileSync("gh", args, {
   encoding: "utf8", input: input === undefined ? undefined : JSON.stringify(input),
   stdio: ["pipe", "pipe", "pipe"],
@@ -15,7 +15,7 @@ const runGh = (args, input) => execFileSync("gh", args, {
 export function publishRelease(plan, repository, artifacts, gh = runGh) {
   if (plan.skip) return { status: "skipped", reason: plan.reason };
   if (!/^[\w.-]+\/[\w.-]+$/.test(repository)) throw new Error("Invalid GitHub repository.");
-  if (artifacts.length !== ASSET_NAMES.length) throw new Error("Expected APK and AAB artifacts.");
+  if (artifacts.length !== ASSET_NAMES.length) throw new Error("Expected APK, AAB and update metadata artifacts.");
   const endpoint = `repos/${repository}`;
   let release;
   try {
@@ -28,6 +28,17 @@ export function publishRelease(plan, repository, artifacts, gh = runGh) {
     return { status: "already-published", tag: plan.tag, url: release.html_url };
   if (release && !release.draft)
     throw new Error("Published release is incomplete; refusing to modify published artifacts.");
+  // A rebuilt/re-signed retry can differ byte-for-byte. Never publish metadata
+  // for new bytes while preserving an APK already uploaded by an earlier attempt.
+  for (const index of [0, 2]) {
+    const asset = release?.assets.find((item) => item.name === ASSET_NAMES[index]);
+    if (!asset) continue;
+    const bytes = readFileSync(artifacts[index]);
+    const digest = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+    if (asset.size !== bytes.length || asset.digest !== digest)
+      throw new Error(`Existing draft ${ASSET_NAMES[index]} differs or has no verified digest. Recover the original checked artifact or remove only the conflicting unpublished draft asset before retrying.`);
+  }
+
   if (!plan.existingTag) {
     const tag = JSON.parse(gh(["api", "--method", "POST", `${endpoint}/git/tags`, "--input", "-"], {
       tag: plan.tag, message: `${plan.tag}\n\nAutomated release of ${plan.sha}.`, object: plan.sha, type: "commit",
@@ -70,6 +81,8 @@ export function prepareArtifacts(plan, cwd = process.cwd()) {
   if (metadata.applicationId !== "io.github.kontsevoye.ichuchu" || metadata.elements.length !== 1 ||
       metadata.elements[0].versionCode !== plan.versionCode || metadata.elements[0].versionName !== plan.versionName ||
       signed.version_code !== plan.versionCode || signed.version_name !== plan.versionName ||
+      signed.package_name !== metadata.applicationId || signed.min_sdk !== 24 ||
+      JSON.stringify(signed.abis) !== JSON.stringify(["arm64-v8a"]) ||
       !/^[0-9a-f]{64}$/.test(signed.certificate_sha256))
     throw new Error("Signed artifact metadata does not match the checked release plan.");
   const sources = [resolve(apkDir, "app-release.apk"), resolve(cwd, "android/app/build/outputs/bundle/release/app-release.aab")];
@@ -83,7 +96,13 @@ export function prepareArtifacts(plan, cwd = process.cwd()) {
   });
   mkdirSync(directory, { recursive: true });
   sources.forEach((source, index) => copyFileSync(source, artifacts[index]));
-  return artifacts;
+  const update = { schemaVersion: 1, distribution: "github", channel: "stable",
+    packageName: signed.package_name, versionCode: plan.versionCode, versionName: plan.versionName,
+    minSdk: signed.min_sdk, commit: plan.sha, certificateSha256: signed.certificate_sha256,
+    artifacts: [{ abi: "arm64-v8a", name: ASSET_NAMES[0], size: readFileSync(sources[0]).length, sha256: hashes[0] }] };
+  const manifest = resolve(directory, ASSET_NAMES[2]);
+  writeFileSync(manifest, JSON.stringify(update, null, 2) + "\n");
+  return [...artifacts, manifest];
 }
 
 function refreshTags(token) {

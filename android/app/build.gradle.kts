@@ -68,8 +68,15 @@ android {
         }
     }
 
+    defaultConfig {
+        buildConfigField("String", "UPDATE_REPOSITORY", "\"kontsevoye/ichuchu\"")
+        buildConfigField("String", "UPDATE_DISTRIBUTION", "\"github\"")
+        buildConfigField("boolean", "SELF_UPDATE_ENABLED", "false")
+    }
+
     buildTypes {
         release {
+            buildConfigField("boolean", "SELF_UPDATE_ENABLED", providers.gradleProperty("enableSelfUpdate").orElse("false").get())
             isMinifyEnabled = true
             isShrinkResources = true
             signingConfig = signingConfigs.getByName("release").takeIf { it.storeFile != null }
@@ -79,6 +86,13 @@ android {
             )
         }
     }
+    buildTypes.create("updateTest") {
+        initWith(buildTypes.getByName("debug"))
+        applicationIdSuffix = ".updatetest"
+        matchingFallbacks += "debug"
+        buildConfigField("boolean", "SELF_UPDATE_ENABLED", "true")
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11
@@ -88,6 +102,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
     testOptions {
         unitTests {
@@ -107,6 +122,11 @@ android {
 }
 
 dependencies {
+    implementation(libs.okhttp)
+    implementation(libs.work.runtime)
+    testImplementation(libs.mockwebserver)
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
+    testImplementation(libs.work.testing)
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.activity.compose)

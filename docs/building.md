@@ -185,3 +185,7 @@ ANDROID_ABI_FILTERS=arm64-v8a ./gradlew :app:assembleDebug
 
 Set `ANDROID_HOME`, `ANDROID_NDK_HOME`, and `JAVA_HOME` to those installations
 before building. The Nix workflow supplies them automatically.
+
+## Updater build controls
+
+`SELF_UPDATE_ENABLED` is false for debug and ordinary local release builds. The CI release path sets `ORG_GRADLE_PROJECT_enableSelfUpdate=true` explicitly; its signed APK and `update.json` are validated before publication. A manually enabled local release must use the same signing certificate as the installation it is intended to update. The isolated `updateTest` package is for acceptance only and is never published. See [in-app updates and device acceptance](updating.md).

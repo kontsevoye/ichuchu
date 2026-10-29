@@ -140,9 +140,9 @@ class TerminalViewModel(application: Application) : AndroidViewModel(application
         return target
     }
 
-    fun openTab(spec: TabSpec): TabSession {
+    fun openTab(spec: TabSpec): TabSession? {
         refreshTailscaleStatus()
-        return sessionRepository.openTab(spec)
+        return sessionRepository.tryOpenTab(spec)
     }
 
     data class PreparedTabOpen(

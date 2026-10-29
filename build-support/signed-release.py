@@ -132,8 +132,14 @@ def sign_artifacts(args, path, alias, env, secrets, fingerprint, clean_env):
     package = re.search(r"^package: name='([^']+)' versionCode='([^']+)' versionName='([^']+)'", badging, re.MULTILINE)
     if not package or package.groups() != (metadata["applicationId"], str(element["versionCode"]), element["versionName"]):
         raise SigningError("APK manifest does not match its build metadata")
+    sdk = re.search(r"^(?:minSdkVersion|sdkVersion):'(\d+)'", badging, re.MULTILINE)
+    if not sdk:
+        raise SigningError("APK minSdk is missing")
+    with zipfile.ZipFile(source) as archive:
+        abis = sorted({name.split("/")[1] for name in archive.namelist() if name.startswith("lib/") and name.endswith(".so")})
     apksigner = str(Path(os.environ["ANDROID_HOME"]) / "build-tools/36.0.0/apksigner")
-    result = {"certificate_sha256": fingerprint, "version_code": metadata["elements"][0]["versionCode"],
+    result = {"package_name": metadata["applicationId"], "min_sdk": int(sdk.group(1)), "abis": abis,
+              "certificate_sha256": fingerprint, "version_code": metadata["elements"][0]["versionCode"],
               "version_name": metadata["elements"][0]["versionName"]}
     with tempfile.TemporaryDirectory(prefix=".signing-", dir=apk_dir) as directory:
         apk = Path(directory) / "app-release.apk"

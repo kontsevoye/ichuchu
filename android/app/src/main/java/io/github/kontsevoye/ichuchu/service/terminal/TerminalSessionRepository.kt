@@ -192,15 +192,16 @@ class TerminalSessionRepository private constructor(application: Application) {
 
     private suspend fun <T> withPreflightEngine(block: suspend (TerminalSessionEngine) -> T): T =
         preflightMutex.withLock {
-            val engine =
+            val engine = synchronized(this) {
+                check(!updateInstallationPending) { "Installation in progress" }
                 TerminalSessionEngine(
                     {},
                     scope,
                     newLocalShellService(),
                     hostKeyStore,
                     tailscaleStatusChecker,
-                )
-            preflightEngine = engine
+                ).also { preflightEngine = it }
+            }
             val promptJob = scope.launch {
                 engine.hostKeyPrompt.collect { prompt ->
                     if (preflightEngine === engine) {
@@ -222,7 +223,35 @@ class TerminalSessionRepository private constructor(application: Application) {
             }
         }
 
+    @Volatile private var updateInstallationPending = false
+
+    /** Reserve the connection boundary before copying an APK into the installer. */
+    @Synchronized
+    fun beginUpdateInstallation(closeSessions: Boolean): Boolean {
+        if (updateInstallationPending) return false
+        if (preflightEngine != null) {
+            if (closeSessions) disconnect()
+            return false
+        }
+        if (_tabs.value.isNotEmpty() && !closeSessions) return false
+        updateInstallationPending = true
+        if (closeSessions) disconnect()
+        return true
+    }
+
+    @Synchronized
+    fun holdUpdateInstallation() { updateInstallationPending = true }
+
+    @Synchronized
+    fun endUpdateInstallation() { updateInstallationPending = false }
+
+    @Synchronized
+    fun tryOpenTab(spec: TabSpec): TabSession? = if (updateInstallationPending) null else openTab(spec)
+
+    @Synchronized
     fun openTab(spec: TabSpec): TabSession {
+        check(!updateInstallationPending) { "Cannot open a terminal during update installation" }
+
         val id = UUID.randomUUID().toString()
         val engine =
             TerminalSessionEngine(
@@ -290,7 +319,9 @@ class TerminalSessionRepository private constructor(application: Application) {
         return true
     }
 
+    @Synchronized
     fun reconnectTab(tab: TabSession) {
+        if (updateInstallationPending) return
         val spec = tab.spec
         tab.engine.connect(
             host = spec.host,
@@ -310,6 +341,7 @@ class TerminalSessionRepository private constructor(application: Application) {
         )
     }
 
+    @Synchronized
     fun disconnect() {
         preflightPromptJob?.cancel()
         preflightPromptJob = null

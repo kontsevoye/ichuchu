@@ -1,0 +1,6 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <!-- This harness exists only in the isolated .updatetest application. -->
+        <activity android:name="io.github.kontsevoye.ichuchu.service.update.UpdateAcceptanceActivity" android:exported="true" />
+    </application>
+</manifest>

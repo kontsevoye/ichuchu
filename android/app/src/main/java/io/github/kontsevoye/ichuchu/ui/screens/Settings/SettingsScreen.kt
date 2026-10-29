@@ -322,4 +322,5 @@ private fun GeneralSettings(
     }
     Spacer(modifier = Modifier.height(4.dp))
     IchuText("encrypted export/import.", style = typography.bodySmall, color = colors.textMuted)
+    UpdatesSection()
 }

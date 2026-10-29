@@ -14,6 +14,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import io.github.kontsevoye.ichuchu.data.repository.SettingsRepository
+import io.github.kontsevoye.ichuchu.service.update.UpdateServices
 import io.github.kontsevoye.ichuchu.ui.screens.AddServer.AddServerScreen
 import io.github.kontsevoye.ichuchu.ui.screens.AddServer.AddServerViewModel
 import io.github.kontsevoye.ichuchu.ui.screens.Keys.KeysViewModel
@@ -21,6 +22,7 @@ import io.github.kontsevoye.ichuchu.ui.screens.ServerList.ServerListScreen
 import io.github.kontsevoye.ichuchu.ui.screens.ServerList.ServerListViewModel
 import io.github.kontsevoye.ichuchu.ui.screens.Settings.SettingsBackupViewModel
 import io.github.kontsevoye.ichuchu.ui.screens.Settings.SettingsScreen
+import io.github.kontsevoye.ichuchu.ui.screens.Settings.UpdateInteractionHost
 import io.github.kontsevoye.ichuchu.ui.screens.Terminal.TerminalScreen
 import io.github.kontsevoye.ichuchu.ui.screens.Terminal.TerminalViewModel
 import io.github.kontsevoye.ichuchu.ui.security.AppLockGate
@@ -40,6 +42,7 @@ fun ApplicationNavController() {
             requireUserVerification(context, "Unlock Ichuchu", "Authenticate to continue", callback)
         },
     ) {
+        UpdateInteractionHost()
         ProtectedNavigation(navController)
     }
 }
@@ -48,6 +51,14 @@ fun ApplicationNavController() {
 private fun ProtectedNavigation(navController: NavHostController) {
     val context = LocalContext.current
     val application = context.applicationContext as Application
+    val updates = UpdateServices.get(application)
+    val openUpdates by updates.openSettings.collectAsStateWithLifecycle()
+    LaunchedEffect(openUpdates) {
+        if (openUpdates) {
+            navController.navigate("settings") { launchSingleTop = true }
+            updates.consumeOpenSettings()
+        }
+    }
     NavHost(navController = navController, startDestination = "servers") {
         composable("servers") {
             val vm: ServerListViewModel =
@@ -225,5 +236,4 @@ private fun ProtectedNavigation(navController: NavHostController) {
             )
         }
     }
-
 }

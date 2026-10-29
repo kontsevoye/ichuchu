@@ -4,7 +4,7 @@ useSeoMeta({
   description: 'Privacy policy for the ichuchu Android SSH client.',
 })
 
-const lastUpdated = 'June 5, 2026'
+const lastUpdated = 'October 29, 2026'
 </script>
 
 <template>
@@ -39,6 +39,7 @@ const lastUpdated = 'June 5, 2026'
           <li>Known host fingerprints used to warn you about SSH host key changes.</li>
           <li>App settings such as theme, accessory key layout, custom terminal actions, and lock preferences.</li>
           <li>Encrypted backup files only when you explicitly export them.</li>
+          <li>Update-check preferences, release metadata, pending installation state, and downloaded APKs in private app storage.</li>
         </ul>
 
         <h2>2. How Ichuchu Uses Network Access</h2>
@@ -46,6 +47,14 @@ const lastUpdated = 'June 5, 2026'
           Ichuchu uses network access only to connect to servers and services that you explicitly
           configure or choose to reach, such as SSH, Mosh, SFTP, and Tailscale-connected hosts.
           Those connections are made directly from your device to the remote host.
+        </p>
+        <p>
+          GitHub-distributed builds can check the project's public GitHub Releases feed and download
+          an APK after you request it. Optional background checks are off by default and only check
+          metadata and notify; they never download or install automatically. These HTTPS requests
+          reach GitHub and its release CDN, which receive ordinary network information such as your
+          IP address and request headers. SSH hosts, terminal content, credentials, and backups are
+          not included in update requests. No GitHub account or token is embedded in the app.
         </p>
         <p>
           Ichuchu does not send your server list, terminal content, credentials, or backups to a
@@ -57,7 +66,9 @@ const lastUpdated = 'June 5, 2026'
           <li><strong>Internet</strong>: Required to connect to remote hosts over SSH, Mosh, SFTP, or Tailscale.</li>
           <li><strong>Network state</strong>: Used to understand connectivity status while managing sessions.</li>
           <li><strong>Foreground service</strong>: Used to keep active terminal sessions running while the app is in the background.</li>
-          <li><strong>Notifications</strong>: Used to show foreground-service session notifications on supported Android versions.</li>
+          <li><strong>Notifications</strong>: Used for terminal-session notifications and, when enabled and permitted, app-update or pending-installation notifications.</li>
+          <li><strong>Install packages</strong>: Allows you to hand a verified update APK to Android for explicit installation confirmation.</li>
+          <li><strong>Wake lock and boot completion</strong>: Used by Android scheduling for optional periodic update checks.</li>
         </ul>
 
         <h2>4. What Ichuchu Does Not Do</h2>
@@ -74,7 +85,7 @@ const lastUpdated = 'June 5, 2026'
           Ichuchu can connect to third-party systems only when you direct it to do so, for example
           your SSH server, a Mosh server process started on that host, or a Tailscale-connected
           device. Those systems are controlled by you or by the operator of the remote host and are
-          outside this privacy policy.
+          outside this privacy policy. GitHub update checks also contact GitHub and its CDN as described above.
         </p>
 
         <h2>6. Data Retention and Control</h2>
