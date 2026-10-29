@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Chuchu orb setup: installs Nix (single source of truth for the toolchain, per
+# Ichuchu orb setup: installs Nix (single source of truth for the toolchain, per
 # flake.nix) and warms the caches the three build paths need:
 #   - nix print-dev-env: Android SDK/NDK, JDK, Zig 0.15.2, Gradle, ktfmt/ktlint,
 #     node/pnpm from the repository flake
-#   - zig build jni: native libchuchu_jni.so for arm64 (ReleaseSmall, like CI)
+#   - zig build jni: native libichuchu_jni.so for arm64 (ReleaseSmall, like CI)
 #   - gradle: wrapper distribution and dependency/plugin downloads
 #   - pnpm: docs/ node_modules
 # Idempotent: a warm snapshot skips every download and only re-verifies.
@@ -13,7 +13,7 @@ export DEBIAN_FRONTEND=noninteractive
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 NIX_PROFILE_SH="/nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh"
 NIX_CONF="/etc/nix/nix.conf"
-NIX_MARKER="# chuchu-orb-setup"
+NIX_MARKER="# ichuchu-orb-setup"
 NIX_BIN="/nix/var/nix/profiles/default/bin"
 step() { printf '\n=== %s ===\n' "$*"; }
 t0=0
@@ -88,7 +88,7 @@ echo "nix daemon active"
 
 # 3. Persist the dev environment for login shells started in the repository ---
 step "bash profile hook"
-bashrc_marker="# chuchu nix profile"
+bashrc_marker="# ichuchu nix profile"
 if ! grep -Fq "$bashrc_marker" "$HOME/.bashrc" 2>/dev/null; then
   cat >> "$HOME/.bashrc" <<EOF
 
@@ -98,17 +98,17 @@ $bashrc_marker
 EOF
 fi
 
-profile_marker="# chuchu Nix development shell"
-hook_call='# chuchu nix hook v2'
+profile_marker="# ichuchu Nix development shell"
+hook_call='# ichuchu nix hook v2'
 # Regenerate the hook when missing or stale (older runs could write an empty eval).
 if ! grep -Fq "$hook_call" "$HOME/.bash_profile" 2>/dev/null; then
-  sed -i '/^# chuchu Nix development shell$/,/^fi$/d' "$HOME/.bash_profile" 2>/dev/null || true
+  sed -i '/^# ichuchu Nix development shell$/,/^fi$/d' "$HOME/.bash_profile" 2>/dev/null || true
   cat >> "$HOME/.bash_profile" <<EOF
 
 $profile_marker
 $hook_call
-if [[ -z "\${CHUCHU_NIX_ENV:-}" && "\${PWD}" == "$REPO_ROOT" ]]; then
-  export CHUCHU_NIX_ENV=1
+if [[ -z "\${ICHUCHU_NIX_ENV:-}" && "\${PWD}" == "$REPO_ROOT" ]]; then
+  export ICHUCHU_NIX_ENV=1
   # shellcheck disable=SC1091
   [[ -f "$NIX_PROFILE_SH" ]] && source "$NIX_PROFILE_SH"
   eval "\$("$NIX_BIN/nix" print-dev-env "$REPO_ROOT")"
@@ -120,7 +120,7 @@ fi
 
 # 4. Realize the flake dev environment (downloads on a cold orb, no-op warm) --
 step "flake dev environment"
-export CHUCHU_NIX_ENV=1
+export ICHUCHU_NIX_ENV=1
 timeit "nix-env" bash -c 'eval "$(nix print-dev-env /home/user/workspace/repo)"'
 # Bring the toolchain into this script's environment for the warm-up builds.
 eval "$("$NIX_BIN/nix" print-dev-env "$REPO_ROOT")"
@@ -138,7 +138,7 @@ timeit "zig" bash -c 'cd zig-src && zig build -Doptimize=ReleaseSmall -Dtarget=a
 # 6. Agent guidance for this orb ---------------------------------------------
 step "orb AGENTS.md note"
 amp_agents="$HOME/.config/amp/AGENTS.md"
-agents_marker="<!-- chuchu orb setup note -->"
+agents_marker="<!-- ichuchu orb setup note -->"
 if ! grep -Fq "$agents_marker" "$amp_agents" 2>/dev/null; then
   cat >> "$amp_agents" <<EOF
 

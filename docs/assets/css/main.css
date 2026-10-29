@@ -25,7 +25,7 @@ html[data-theme="light"] {
   color-scheme: light;
 
   /* Neobones Light — sage paper + deep olive ink.
-     Tokens derived the same way as the Android app's toChuColorPalette():
+     Tokens derived the same way as the Android app's toIchuColorPalette():
      accent = foreground mixed toward bg (terminal "inverted text" button),
      border bumped to ~28% contrast against bg so secondary controls remain
      readable on a pale background. */
@@ -197,13 +197,13 @@ a:hover {
   border-top: 1px dashed var(--border);
 }
 
-/* ChuCard equivalent */
+/* IchuCard equivalent */
 .tui-card {
   background: var(--surface);
   border: 1px solid var(--border);
 }
 
-/* ChuButton bracket style */
+/* IchuButton bracket style */
 .bracket-btn {
   display: inline-flex;
   align-items: center;

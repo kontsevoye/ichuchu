@@ -7,7 +7,7 @@ plugins {
 }
 
 android {
-    namespace = "com.jossephus.chuchu"
+    namespace = "io.github.kontsevoye.ichuchu"
     compileSdk {
         version = release(36)
     }
@@ -20,7 +20,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.jossephus.chuchu"
+        applicationId = "io.github.kontsevoye.ichuchu"
         minSdk = 24
         targetSdk = 36
 

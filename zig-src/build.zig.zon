@@ -1,5 +1,5 @@
 .{
-    .name = .chuchu,
+    .name = .ichuchu,
     .version = "0.0.0",
     .dependencies = .{
         .ghostty = .{
@@ -22,7 +22,7 @@
             .hash = "openssl-3.6.0-wZcA76Qb8gHOC9xYtu7mOgCh_5Fdf-ysBWyDaR9vvwgL",
         },
     },
-    .fingerprint = 0xddba11030bd5a50,
+    .fingerprint = 0x3f5bd6fb28483df2,
     .paths = .{
         "build.zig",
         "build.zig.zon",

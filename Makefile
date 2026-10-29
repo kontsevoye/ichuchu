@@ -6,7 +6,7 @@ build:
 app:
 	cd android && ./gradlew assembleDebug
 	cd android && ./gradlew installDebug
-	adb shell am start -n com.jossephus.chuchu/.MainActivity
+	adb shell am start -n io.github.kontsevoye.ichuchu/.MainActivity
 
 fmt:
 	ktfmt --kotlinlang-style $(shell find $(KT_SRC) -name '*.kt')

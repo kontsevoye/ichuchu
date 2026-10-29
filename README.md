@@ -1,30 +1,27 @@
 <p align="center">
-  <img src="./assets/logo.png" alt="Chuchu logo" width="48" height="48" />
+  <img src="./assets/logo.png" alt="Ichuchu logo" width="48" height="48" />
 </p>
 
-<h1 align="center">Chuchu</h1>
+<h1 align="center">ichuchu</h1>
 
 <p align="center">
  A Modern, Better, Native Android SSH client powered by libghostty
 </p>
 
 <p align="center">
-  <a href="https://github.com/jossephus/chuchu/releases/latest">Download Latest</a> ·
-  <a href="https://github.com/jossephus/chuchu/releases/">ChangeLog</a> ·
+  <a href="https://github.com/kontsevoye/ichuchu/releases/latest">Download Latest</a> ·
+  <a href="https://github.com/kontsevoye/ichuchu/releases/">ChangeLog</a> ·
 </p>
 
 ---
 
+ichuchu is an independently maintained hard fork of [chuchu](https://github.com/jossephus/chuchu), with a fresh Git history and additional personal improvements to security, builds, and usability.
 
-<table align="center" cellpadding="10">
-  <tr>
-    <td><img src="./assets/sample-3.jpg" alt="Chuchu sample 3" height="420" /></td>
-    <td><img src="./assets/sample-2.jpg" alt="Chuchu sample 2" height="420" /></td>
-    <td><img src="./assets/sample-1.jpg" alt="Chuchu sample 1" height="420" /></td>
-    <td><img src="./assets/sample-4.jpg" alt="Chuchu sample 4" height="420" /></td>
-</table>
+The Android application ID is `io.github.kontsevoye.ichuchu`; it installs separately and keeps its own app data.
 
-Chuchu is a native Android SSH client powered by libghostty, a terminal-first Compose UI, and has support for both standard SSH and Tailscale SSH workflows.
+
+
+Ichuchu is a native Android SSH client powered by libghostty, a terminal-first Compose UI, and has support for both standard SSH and Tailscale SSH workflows.
 
 ### Features 
 - tailscale, ssh password + key authentication
@@ -37,17 +34,16 @@ Chuchu is a native Android SSH client powered by libghostty, a terminal-first Co
 
 ## Status
 
-Chuchu is in active development. I am daily driving it and improving any issues i found in the way. Join the journey and report any bugs you find. And I welcome any contributions.
+ichuchu is independently maintained with additional security, build, and usability improvements. Issues and contributions are welcome.
 
 
 ### Getting Started
 
-Checkout our [releases](https://github.com/jossephus/chuchu/releases) and download the APK from there.
+Checkout our [releases](https://github.com/kontsevoye/ichuchu/releases) and download the APK from there.
 
 - **Stable:** the latest non-prerelease build
-- **Nightly:** every push to `main` publishes a rolling prerelease at the [`nightly`](https://github.com/jossephus/chuchu/releases/tag/nightly) tag
+- **Nightly:** every push to `main` publishes a rolling prerelease at the [`nightly`](https://github.com/kontsevoye/ichuchu/releases/tag/nightly) tag
 
-I don't have a personal Play Store account right now (and I can't open one because of the payment limitation in my country, feel free to contact me if you want to publish it.)
 
 
 ## Stack
@@ -80,7 +76,7 @@ Set `ANDROID_NDK_HOME` or `ANDROID_NDK_ROOT`, then build the JNI library for And
 zig build jni -Dtarget=aarch64-linux-android
 ```
 
-That copies `libchuchu_jni.so` into `app/src/main/jniLibs/arm64-v8a/`.
+That copies `libichuchu_jni.so` into `app/src/main/jniLibs/arm64-v8a/`.
 
 3. From android studio run 
 ```sh
@@ -94,18 +90,4 @@ make build
 cd android && ./gradlew assembleDebug
 ```
 
-The APK should include `lib/arm64-v8a/libchuchu_jni.so`; without it native SSH/key generation will fail on device.
-
-## Inspiration
-
-I have been using [vvterm](https://github.com/vivy-company/vvterm) on iOS for the past few weeks and i really liked it.  This project came from my desire to have native ssh client but for android.
-
-## Project Name
-chuchu is one of my favorite characters from the amharic book [Yesinbit Kelemat](https://www.goodreads.com/book/show/30759971) [translated to colors of adios]. 
-
-## Demo
-
-<p align="center">
-  <img src="./assets/chuchu_demo.gif" width="400" alt="Chuchu demo" />
-</p>
-
+The APK should include `lib/arm64-v8a/libichuchu_jni.so`; without it native SSH/key generation will fail on device.

@@ -1,6 +1,6 @@
-# chuchu docs site
+# ichuchu docs site
 
-Static landing page for [chuchu](https://github.com/jossephus/chuchu), built with
+Static landing page for [ichuchu](https://github.com/kontsevoye/ichuchu), built with
 Nuxt 3 + Tailwind. Styled to match the in-app terminal aesthetic (Tokyo Night
 palette, JetBrains Mono, terminal-block accents).
 
@@ -19,10 +19,10 @@ npm run generate
 # output in .output/public — deploy that to any static host
 ```
 
-If you deploy under a subpath (e.g. GitHub Pages at `/chuchu/`):
+If you deploy under a subpath (e.g. GitHub Pages at `/ichuchu/`):
 
 ```sh
-NUXT_APP_BASE_URL=/chuchu/ npm run generate
+NUXT_APP_BASE_URL=/ichuchu/ npm run generate
 ```
 
 ## Layout
@@ -30,4 +30,4 @@ NUXT_APP_BASE_URL=/chuchu/ npm run generate
 - `app.vue` — single-page landing
 - `assets/css/main.css` — global styles + custom utilities (`.term-block`, `.chip`, `.btn`)
 - `tailwind.config.js` — palette + fonts
-- `public/` — logo, sample screenshots and demo gif (copied from `../assets`)
+- `public/` — site logo

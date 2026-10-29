@@ -23,13 +23,14 @@ jobs:
           nix_path: nixpkgs=channel:nixos-unstable
 
       - name: Build docs
+        env:
+          NUXT_APP_BASE_URL: /ichuchu/
         run: nix develop -c sh -c 'cd docs && pnpm install && pnpm run generate'
 
       - name: Deploy to GitHub Pages
-        uses: peaceiris/actions-gh-pages@v3
+        uses: peaceiris/actions-gh-pages@v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_dir: ./docs/.output/public
           publish_branch: gh-pages
           destination_dir: .
-          cname: chuchu.jossephus.et

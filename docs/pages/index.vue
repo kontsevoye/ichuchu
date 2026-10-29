@@ -1,7 +1,8 @@
 <script setup lang="ts">
+const baseURL = useRuntimeConfig().app.baseURL
 const year = new Date().getFullYear()
 
-const release = await $fetch('https://api.github.com/repos/jossephus/chuchu/releases/latest').catch(() => null)
+const release = await $fetch('https://api.github.com/repos/kontsevoye/ichuchu/releases/latest').catch(() => null)
 const version = release?.tag_name ?? ''
 
 const groups = [
@@ -32,7 +33,7 @@ const groups = [
       'configurable accessory key row',
       'custom key macros & nested key groups',
       'per-host post-connect actions',
-      'chuchu key — leader prefix for app actions',
+      'ichuchu key — leader prefix for app actions',
       'foreground service keeps sessions alive',
     ],
   },
@@ -40,17 +41,15 @@ const groups = [
 
 // Theme toggle — sync with inline script in nuxt.config head
 const isDark = ref(true)
-const darkVideo = ref<HTMLVideoElement>()
-const lightVideo = ref<HTMLVideoElement>()
 
 function applyTheme(dark: boolean) {
   isDark.value = dark
   if (dark) {
     document.documentElement.removeAttribute('data-theme')
-    localStorage.setItem('chuchu-theme', 'dark')
+    localStorage.setItem('ichuchu-theme', 'dark')
   } else {
     document.documentElement.setAttribute('data-theme', 'light')
-    localStorage.setItem('chuchu-theme', 'light')
+    localStorage.setItem('ichuchu-theme', 'light')
   }
 }
 
@@ -61,14 +60,8 @@ function toggleTheme(event?: MouseEvent) {
   // toggle on top of an in-flight one.
   if (themeTransitionPending) return
 
-  const time = (isDark.value ? darkVideo.value : lightVideo.value)?.currentTime ?? 0
-
   const swap = () => {
     applyTheme(!isDark.value)
-    nextTick(() => {
-      const target = isDark.value ? darkVideo.value : lightVideo.value
-      if (target) target.currentTime = time
-    })
   }
 
   // Set the reveal origin to the click position (falls back to center).
@@ -131,7 +124,7 @@ onMounted(() => {
       >
         <div class="flex items-stretch">
           <span class="seg bg-accent text-onAccent font-bold">NORMAL</span>
-          <span class="seg text-fg">chuchu</span>
+          <span class="seg text-fg">ichuchu</span>
           <span class="seg text-muted">{{ version }}</span>
         </div>
         <div class="flex items-stretch text-muted">
@@ -146,7 +139,7 @@ onMounted(() => {
             <span class="label">{{ isDark ? 'light' : 'dark' }}</span>
             <span class="bracket">]</span>
           </button>
-          <span class="seg hidden sm:inline-flex">~/chuchu</span>
+          <span class="seg hidden sm:inline-flex">~/ichuchu</span>
           <span class="seg bg-surfaceVar text-fg">main</span>
         </div>
       </div>
@@ -154,9 +147,9 @@ onMounted(() => {
       <div class="p-6 md:p-10">
         <div class="flex flex-col items-start gap-6 md:gap-8">
           <div class="flex items-start gap-3">
-            <img src="/logo.png" alt="" class="w-10 h-10" />
+            <img :src="`${baseURL}logo.png`" alt="" class="w-10 h-10" />
             <div>
-              <h1 class="text-fg text-lg font-bold">chuchu</h1>
+              <h1 class="text-fg text-lg font-bold">ichuchu</h1>
               <p class="text-fg text-base">
                 <span class="font-bold">native android ssh client</span>
                 <span class="text-muted"> · powered by libghostty</span>
@@ -165,7 +158,7 @@ onMounted(() => {
           </div>
 
           <p class="text-fg text-base leading-relaxed max-w-2xl">
-            <span class="text-accent">$</span> chuchu — a native
+            <span class="text-accent">$</span> ichuchu — a native
             <span class="bg-accent text-onAccent font-bold px-1.5 py-0.5">Android SSH client</span>
             with a beautiful terminal renderer. Tailscale, SSH and Mosh ·
             kitty image protocol · 400+ ghostty themes · multi-session tabs ·
@@ -174,7 +167,7 @@ onMounted(() => {
 
           <div class="flex flex-wrap gap-2">
             <a
-              :href="`https://github.com/jossephus/chuchu/releases/tag/${version}`"
+              :href="`https://github.com/kontsevoye/ichuchu/releases/tag/${version}`"
               class="bracket-btn accent"
             >
               <span class="bracket">[</span>
@@ -182,7 +175,7 @@ onMounted(() => {
               <span class="bracket">]</span>
             </a>
             <a
-              href="https://github.com/jossephus/chuchu/releases"
+              href="https://github.com/kontsevoye/ichuchu/releases"
               class="bracket-btn"
             >
               <span class="bracket">[</span>
@@ -190,7 +183,7 @@ onMounted(() => {
               <span class="bracket">]</span>
             </a>
             <a
-              href="https://github.com/jossephus/chuchu"
+              href="https://github.com/kontsevoye/ichuchu"
               class="bracket-btn"
             >
               <span class="bracket">[</span>
@@ -202,42 +195,6 @@ onMounted(() => {
               <span>privacy</span>
               <span class="bracket">]</span>
             </NuxtLink>
-          </div>
-        </div>
-
-        <div class="mt-10 md:mt-14">
-          <div class="tui-rule">demo</div>
-          <div
-            class="block w-full max-w-xs sm:max-w-sm mx-auto"
-            aria-label="watch demo"
-          >
-            <div class="relative bg-surfaceVar border border-border p-2">
-              <div class="flex items-center justify-center h-4 mb-1.5">
-                <div class="w-8 h-1 bg-border rounded" />
-              </div>
-              <div class="relative aspect-[9/19.5] border border-border bg-black overflow-hidden">
-                <video
-                  ref="darkVideo"
-                  class="absolute inset-0 w-full h-full object-cover"
-                  src="/demo-dark.mp4"
-                  autoplay
-                  muted
-                  loop
-                  playsinline
-                  :class="isDark ? 'opacity-100' : 'opacity-0'"
-                />
-                <video
-                  ref="lightVideo"
-                  class="absolute inset-0 w-full h-full object-cover"
-                  src="/demo-light.mp4"
-                  autoplay
-                  muted
-                  loop
-                  playsinline
-                  :class="isDark ? 'opacity-0' : 'opacity-100 invert hue-rotate-180'"
-                />
-              </div>
-            </div>
           </div>
         </div>
 
@@ -259,7 +216,7 @@ onMounted(() => {
         <div class="mt-10 md:mt-14">
           <div class="tui-rule">privacy</div>
           <p class="max-w-3xl text-sm text-fgSec leading-relaxed">
-            Chuchu is local-first. It stores your server profiles, SSH keys, host key fingerprints,
+            Ichuchu is local-first. It stores your server profiles, SSH keys, host key fingerprints,
             and app settings on your device, then uses the network only to connect to the servers
             you configure. The published privacy policy is available at
             <NuxtLink to="/privacy" class="text-accent">/privacy</NuxtLink>.
@@ -268,10 +225,10 @@ onMounted(() => {
       </div>
 
       <footer class="border-t border-border px-6 py-4 text-xs text-muted md:px-10 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-        <span>© {{ year }} chuchu</span>
+        <span>© {{ year }} ichuchu</span>
         <div class="flex flex-wrap gap-4">
           <NuxtLink to="/privacy">privacy policy</NuxtLink>
-          <a href="https://github.com/jossephus/chuchu/issues">contact</a>
+          <a href="https://github.com/kontsevoye/ichuchu/issues">contact</a>
         </div>
       </footer>
     </div>

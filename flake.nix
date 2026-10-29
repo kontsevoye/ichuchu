@@ -1,5 +1,5 @@
 {
-  description = "Chuchu";
+  description = "Ichuchu";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs";

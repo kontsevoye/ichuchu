@@ -1,3 +1,5 @@
+const baseURL = process.env.NUXT_APP_BASE_URL || "/"
+
 // https://nuxt.com/docs/api/configuration/nuxt-config
 export default defineNuxtConfig({
   compatibilityDate: '2025-01-01',
@@ -9,9 +11,9 @@ export default defineNuxtConfig({
     preset: 'static',
   },
   app: {
-    baseURL: process.env.NUXT_APP_BASE_URL || '/',
+    baseURL,
     head: {
-      title: 'chuchu',
+      title: 'ichuchu',
       htmlAttrs: { lang: 'en' },
       bodyAttrs: { class: 'antialiased' },
       meta: [
@@ -20,20 +22,20 @@ export default defineNuxtConfig({
         {
           name: 'description',
           content:
-            'chuchu is a modern, native Android SSH client powered by libghostty.',
+            'ichuchu is a modern, native Android SSH client powered by libghostty.',
         },
         { name: 'theme-color', content: '#1E1E2E' },
-        { property: 'og:title', content: 'chuchu' },
+        { property: 'og:title', content: 'ichuchu' },
         {
           property: 'og:description',
           content:
             'A modern, native Android SSH client powered by libghostty.',
         },
         { property: 'og:type', content: 'website' },
-        { property: 'og:image', content: '/logo.png' },
+        { property: 'og:image', content: `${baseURL}logo.png` },
       ],
       link: [
-        { rel: 'icon', type: 'image/png', href: '/logo.png' },
+        { rel: 'icon', type: 'image/png', href: `${baseURL}logo.png` },
         {
           rel: 'preconnect',
           href: 'https://fonts.googleapis.com',
@@ -52,7 +54,7 @@ export default defineNuxtConfig({
         {
           innerHTML: `
             (function() {
-              var theme = localStorage.getItem('chuchu-theme');
+              var theme = localStorage.getItem('ichuchu-theme');
               if (theme === 'light' || (!theme && window.matchMedia('(prefers-color-scheme: light)').matches)) {
                 document.documentElement.setAttribute('data-theme', 'light');
               }
