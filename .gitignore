@@ -11,6 +11,7 @@ local.properties
 .kotlin/
 .npm/
 .plans/
+.cache/
 .zig-cache/
 references/
 scripts/

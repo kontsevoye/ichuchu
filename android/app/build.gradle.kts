@@ -48,7 +48,7 @@ android {
 
     signingConfigs {
         create("release") {
-            val keystoreFile = file("key.jks")
+            val keystoreFile = System.getenv("KEYSTORE_FILE")?.let { file(it) } ?: file("key.jks")
             val keystorePassword = System.getenv("KEYSTORE_PASSWORD")
             val keyAliasEnv = System.getenv("KEY_ALIAS")
             val keyPasswordEnv = System.getenv("KEY_PASSWORD")
@@ -66,7 +66,7 @@ android {
         release {
             isMinifyEnabled = true
             isShrinkResources = true
-            signingConfig = signingConfigs.getByName("release")
+            signingConfig = signingConfigs.getByName("release").takeIf { it.storeFile != null }
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"

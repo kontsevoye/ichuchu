@@ -1,10 +1,15 @@
-.PHONY: build app
+.PHONY: build app apk release
 
 build:
-	cd zig-src && zig build -Doptimize=ReleaseSmall jni
+	cd zig-src && zig build -Doptimize=ReleaseSmall -Dtarget=aarch64-linux-android.24 jni
 
-app:
-	cd android && ./gradlew assembleDebug
+apk:
+	bash build-support/build-apk.sh debug
+
+release:
+	bash build-support/build-apk.sh release
+
+app: apk
 	cd android && ./gradlew installDebug
 	adb shell am start -n io.github.kontsevoye.ichuchu/.MainActivity
 

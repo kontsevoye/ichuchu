@@ -55,39 +55,22 @@ Checkout our [releases](https://github.com/kontsevoye/ichuchu/releases) and down
 - Room for local data storage
 
 
-### Development - Prerequisites
+### Building APKs with Nix
 
-If you have nix installed, the following three steps will get you started
-
-1. nix develop - will set you up with everything you will need.
-2. running 'make build' will build the native code needed 
-3. running 'make app' will build the apk and install it in a connected device. 
-
-If you don't have nix installed, you will need
-
-1. setup tools
-- Android Studio - This will set up the needed Android SDK, Android NDK and Java runtime (JDK 17+).
-- Zig 0.15.2
-2. build the native library
-
-Set `ANDROID_NDK_HOME` or `ANDROID_NDK_ROOT`, then build the JNI library for Android arm64:
+From the checkout root, with Nix and flakes enabled:
 
 ```sh
-zig build jni -Dtarget=aarch64-linux-android
+nix develop --command build-apk debug
+nix develop --command build-apk release
 ```
 
-That copies `libichuchu_jni.so` into `app/src/main/jniLibs/arm64-v8a/`.
+The checked-in flake and lock provide the SDK/NDK, JDK, and Zig. Both commands
+rebuild arm64 JNI and verify that the APK contains the newly built native library.
+Outputs are in `android/app/build/outputs/apk/`; release APKs are unsigned unless
+release signing is configured.
 
-3. From android studio run 
-```sh
-./gradlew assembleDebug
-```
+For an interactive shell, run `nix develop`, then `make apk` or `make release`. `make app` also installs and opens the debug build on a connected
+device; set `ANDROID_SERIAL` when selecting a device.
 
-For a manual debug APK, run the native build first, then assemble the app:
-
-```sh
-make build
-cd android && ./gradlew assembleDebug
-```
-
-The APK should include `lib/arm64-v8a/libichuchu_jni.so`; without it native SSH/key generation will fail on device.
+See [building and signing instructions](docs/building.md) for toolchain versions,
+caches, external signing keys, and manual builds without Nix.
