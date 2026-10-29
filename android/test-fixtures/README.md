@@ -47,3 +47,37 @@ output reached the terminal before sending Ctrl+D/exit. They verify normal
 completion, active/background tab preservation, and last-tab navigation.
 
 Native shutdown/ACK and timeout regressions: `cd zig-src && zig build test-mosh`.
+
+## SSH jump hosts
+
+Run the synthetic fixture using the same Paramiko environment:
+
+```sh
+/tmp/ichuchu-ssh-fixture-venv/bin/python android/test-fixtures/ssh_jump_server.py
+```
+
+The only TCP listener is `127.0.0.1:22227`. It exposes virtual SSH destinations
+`jump-1.internal:2201`, `jump-2.internal:2202` and `jump-3.internal:2203` inside
+forwarding channels; they have no separate TCP listeners or public DNS entries.
+Passwords are synthetic `fixture-0` through `fixture-3`. Public-key auth accepts
+synthetic test keys only within this disposable fixture. Files exist only in
+memory; exec accepts the fixed `jump-probe` command and never executes a shell.
+
+Build/install debug and Android test APKs on a disposable emulator, then run:
+
+```sh
+adb -s <test-emulator> shell am instrument -w \
+  -e class io.github.kontsevoye.ichuchu.NativeSshJumpTest,io.github.kontsevoye.ichuchu.TerminalJumpRouteTest,io.github.kontsevoye.ichuchu.JumpHostEditorTest \
+  -e sshJumpFixture true \
+  io.github.kontsevoye.ichuchu.test/androidx.test.runner.AndroidJUnitRunner
+```
+
+The suite covers 0–3 bastions, host-key rejection, forwarding refusal, encrypted
+key and password on different hops, large shell input/output, resize, SFTP
+roundtrip after idle, interruption of a stalled child handshake, terminal exit/reconnect
+and route editor selection/reordering/persistence. The server forces rekey every
+64 KiB. Editor acceptance creates and removes only synthetic profiles in the
+disposable test app. Without the explicit
+fixture flag the network tests are skipped. Stop the fixture after testing.
+This fixture proves nested client transport behavior, not real sshd policy or
+physical-device network roaming.

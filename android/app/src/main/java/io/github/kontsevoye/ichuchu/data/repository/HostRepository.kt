@@ -13,9 +13,9 @@ class HostRepository(private val dao: HostProfileDao) {
 
     suspend fun getById(id: Long): HostProfile? = dao.getById(id)
 
-    suspend fun upsert(profile: HostProfile): Long = dao.insert(profile)
+    suspend fun upsert(profile: HostProfile): Long = dao.saveValidated(profile)
 
-    suspend fun delete(profile: HostProfile) = dao.delete(profile)
+    suspend fun delete(profile: HostProfile) = dao.deleteUnused(profile)
 
     suspend fun clearKeyReference(keyId: Long) = dao.clearKeyReference(keyId)
 }

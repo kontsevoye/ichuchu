@@ -1,3 +1,4 @@
+//! SSH JNI sessions, including nested direct-tcpip transports.
 const std = @import("std");
 
 const c = @cImport({
@@ -41,6 +42,10 @@ const sftp_idle_limit_ms: i64 = 15_000;
 
 const NativeSshSession = struct {
     socket_fd: c_int = -1,
+    cancelled: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    parent: ?*NativeSshSession = null,
+    forwarding_channel: ?*c.LIBSSH2_CHANNEL = null,
+    setup_deadline_ms: i64 = 0,
     session: ?*c.LIBSSH2_SESSION = null,
     channel: ?*c.LIBSSH2_CHANNEL = null,
     sftp: ?*c.LIBSSH2_SFTP = null,
@@ -144,10 +149,19 @@ fn clearHostKeyCopy(session: *NativeSshSession) void {
     session.hostkey_type = 0;
 }
 
-fn waitSocket(session: *NativeSshSession, timeout_ms: c_int) bool {
-    const ssh_session = session.session orelse return false;
-    if (session.socket_fd < 0) return false;
+fn transportCancelled(session: *NativeSshSession) bool {
+    var root = session;
+    while (root.parent) |parent| root = parent;
+    return root.cancelled.load(.acquire);
+}
 
+fn waitSocket(session: *NativeSshSession, timeout_ms: c_int) bool {
+    var root = session;
+    while (root.parent) |parent| root = parent;
+    const ssh_session = root.session orelse return false;
+    if (root.socket_fd < 0) return false;
+
+    if (root.cancelled.load(.acquire)) return false;
     const directions = c.libssh2_session_block_directions(ssh_session);
     var events: c_short = 0;
     if ((directions & c.LIBSSH2_SESSION_BLOCK_INBOUND) != 0) {
@@ -157,16 +171,26 @@ fn waitSocket(session: *NativeSshSession, timeout_ms: c_int) bool {
         events |= c.POLLOUT;
     }
     if (events == 0) {
-        events = c.POLLIN | c.POLLOUT;
+        events = c.POLLIN;
     }
 
     var poll_fds: [1]c.struct_pollfd = .{.{
-        .fd = session.socket_fd,
+        .fd = root.socket_fd,
         .events = events,
         .revents = 0,
     }};
-    const poll_rc = c.poll(&poll_fds, 1, timeout_ms);
-    return poll_rc > 0;
+    const deadline = if (timeout_ms == setup_wait_timeout_ms and session.setup_deadline_ms > 0)
+        session.setup_deadline_ms
+    else
+        nowMs() + timeout_ms;
+    while (!root.cancelled.load(.acquire)) {
+        const remaining = deadline - nowMs();
+        if (remaining <= 0) return false;
+        const rc = c.poll(&poll_fds, 1, @intCast(@min(remaining, 100)));
+        if (rc > 0) return !root.cancelled.load(.acquire);
+        if (rc < 0) return false;
+    }
+    return false;
 }
 
 fn trySetChannelEnv(session: *NativeSshSession, channel: *c.LIBSSH2_CHANNEL, name: []const u8, value: []const u8) void {
@@ -195,31 +219,35 @@ fn nowMs() i64 {
 }
 
 fn destroyNativeSshSession(session: *NativeSshSession) void {
-    if (session.upload_handle) |uh| {
-        _ = closeSftpHandle(session, uh, "destroy upload handle");
-        session.upload_handle = null;
-    }
-    if (session.sftp) |sftp| {
-        _ = shutdownSftp(session, sftp, "destroy session");
-        session.sftp = null;
-    }
-    if (session.channel) |channel| {
-        _ = c.libssh2_channel_close(channel);
-        _ = c.libssh2_channel_free(channel);
-    }
-    if (session.session) |ssh_session| {
-        _ = c.libssh2_session_disconnect_ex(ssh_session, c.SSH_DISCONNECT_BY_APPLICATION, "bye", "en");
-        _ = c.libssh2_session_free(ssh_session);
-    }
-    closeSocket(session.socket_fd);
+    closeNativeTransport(session);
     if (session.username) |username| allocator.free(username);
     clearHostKeyCopy(session);
     session.last_error.deinit(allocator);
     allocator.destroy(session);
 }
 
+/// Children must be destroyed before their borrowed parent. Never wait for a
+/// network acknowledgement during teardown, including on an interrupted chain.
+fn closeNativeTransport(session: *NativeSshSession) void {
+    if (session.session) |ssh_session| {
+        c.ichuchu_ssh_session_abort_io(ssh_session);
+        _ = c.libssh2_session_free(ssh_session);
+        session.session = null;
+    }
+    session.channel = null;
+    session.sftp = null;
+    session.upload_handle = null;
+    if (session.forwarding_channel) |channel| {
+        _ = c.libssh2_channel_free(channel);
+        session.forwarding_channel = null;
+    }
+    if (session.parent == null) closeSocket(session.socket_fd);
+    session.socket_fd = -1;
+}
+
 fn ensureSftp(session: *NativeSshSession) ?*c.LIBSSH2_SFTP {
     if (session.sftp) |sftp| return sftp;
+    session.setup_deadline_ms = nowMs() + setup_wait_timeout_ms;
     const ssh_session = session.session orelse {
         setError(session, "SSH session not connected", .{});
         return null;
@@ -256,7 +284,7 @@ const SftpProgress = enum {
 /// caller should retry. `idle_since_ms` is reset whenever the socket signals
 /// activity so the idle budget only measures genuinely silent periods.
 fn awaitSftpProgress(session: *NativeSshSession, idle_since_ms: *i64) SftpProgress {
-    if (session.session == null or session.socket_fd < 0) return .no_socket;
+    if (session.session == null or session.socket_fd < 0 or transportCancelled(session)) return .no_socket;
     if (waitSocket(session, io_wait_timeout_ms)) {
         idle_since_ms.* = nowMs();
         return .retry;
@@ -362,7 +390,7 @@ fn sftpOpenDir(session: *NativeSshSession, sftp: *c.LIBSSH2_SFTP, path_z: [:0]u8
     }
 }
 
-fn connectSocket(host: [:0]const u8, port: u16) !c_int {
+fn connectSocket(session: *NativeSshSession, host: [:0]const u8, port: u16) !c_int {
     var hints: c.struct_addrinfo = std.mem.zeroes(c.struct_addrinfo);
     hints.ai_family = c.AF_UNSPEC;
     hints.ai_socktype = c.SOCK_STREAM;
@@ -379,8 +407,26 @@ fn connectSocket(host: [:0]const u8, port: u16) !c_int {
     while (cur) |info| : (cur = info.ai_next) {
         const fd = c.socket(info.ai_family, info.ai_socktype, info.ai_protocol);
         if (fd < 0) continue;
+        if (session.cancelled.load(.acquire)) {
+            closeSocket(fd);
+            return error.Cancelled;
+        }
+        session.socket_fd = fd;
+        setSocketNonBlocking(fd);
         if (c.connect(fd, info.ai_addr, info.ai_addrlen) == 0) return fd;
+        var polls: [1]c.struct_pollfd = .{.{ .fd = fd, .events = c.POLLOUT, .revents = 0 }};
+        const connect_deadline_ms = nowMs() + setup_wait_timeout_ms;
+        while (!session.cancelled.load(.acquire) and nowMs() < connect_deadline_ms) {
+            const rc_poll = c.poll(&polls, 1, 100);
+            if (rc_poll == 0) continue;
+            if (rc_poll < 0) break;
+            var socket_error: c_int = 0;
+            var error_len: c.socklen_t = @sizeOf(c_int);
+            if (c.getsockopt(fd, c.SOL_SOCKET, c.SO_ERROR, &socket_error, &error_len) == 0 and socket_error == 0 and !session.cancelled.load(.acquire)) return fd;
+            break;
+        }
         closeSocket(fd);
+        session.socket_fd = -1;
     }
     return error.ConnectFailed;
 }
@@ -556,7 +602,7 @@ export fn Java_io_github_kontsevoye_ichuchu_service_ssh_NativeSshBridge_nativeCo
         return c.JNI_FALSE;
     };
 
-    const fd = connectSocket(host_z, @intCast(@max(port, 0))) catch {
+    const fd = connectSocket(session, host_z, @intCast(@max(port, 0))) catch {
         logError("Socket connect failed host={s} port={}", .{ host_slice, port });
         setError(session, "Socket connect failed host={s} port={}", .{ host_slice, port });
         return c.JNI_FALSE;
@@ -572,19 +618,25 @@ export fn Java_io_github_kontsevoye_ichuchu_service_ssh_NativeSshBridge_nativeCo
     };
     session.session = ssh_session;
     c.libssh2_session_set_blocking(ssh_session, 0);
+    return if (finishHandshake(session, ssh_session, fd)) c.JNI_TRUE else c.JNI_FALSE;
+}
+
+fn finishHandshake(session: *NativeSshSession, ssh_session: *c.LIBSSH2_SESSION, fd: c_int) bool {
     logInfo("Starting SSH handshake...", .{});
+    const deadline_ms = nowMs() + setup_wait_timeout_ms;
+    session.setup_deadline_ms = deadline_ms;
     while (true) {
         const handshake_rc = c.libssh2_session_handshake(ssh_session, fd);
         if (handshake_rc == 0) break;
         if (handshake_rc != c.LIBSSH2_ERROR_EAGAIN) {
             logError("SSH handshake failed rc={}", .{handshake_rc});
             setLibssh2Error(session, "SSH handshake failed", handshake_rc);
-            return c.JNI_FALSE;
+            return false;
         }
-        if (!waitSocket(session, setup_wait_timeout_ms)) {
+        if (nowMs() >= deadline_ms or !waitSocket(session, setup_wait_timeout_ms)) {
             logError("SSH handshake timed out", .{});
             setError(session, "SSH handshake timed out", .{});
-            return c.JNI_FALSE;
+            return false;
         }
     }
     logInfo("SSH handshake completed", .{});
@@ -593,23 +645,69 @@ export fn Java_io_github_kontsevoye_ichuchu_service_ssh_NativeSshBridge_nativeCo
     const hostkey_ptr = c.libssh2_session_hostkey(ssh_session, &hostkey_len, &session.hostkey_type);
     if (hostkey_ptr == null or hostkey_len == 0) {
         setError(session, "Missing server host key", .{});
-        return c.JNI_FALSE;
+        return false;
     }
     const hostkey_copy = allocator.alloc(u8, hostkey_len) catch {
         setError(session, "Host key copy alloc failed", .{});
-        return c.JNI_FALSE;
+        return false;
     };
     @memcpy(hostkey_copy, hostkey_ptr[0..hostkey_len]);
     session.hostkey_copy = hostkey_copy;
     session.hostkey_ptr = hostkey_copy.ptr;
     session.hostkey_len = hostkey_len;
-    return c.JNI_TRUE;
+    return true;
+}
+
+/// The parent is borrowed and remains alive until this child is destroyed.
+export fn Java_io_github_kontsevoye_ichuchu_service_ssh_NativeSshBridge_nativeConnectVia(env: *c.JNIEnv, thiz: c.jobject, handle: c.jlong, parent_handle: c.jlong, host: c.jstring, port: c.jint, username: c.jstring) callconv(.c) c.jboolean {
+    _ = thiz;
+    const session = sessionFromHandle(handle) orelse return c.JNI_FALSE;
+    const parent = sessionFromHandle(parent_handle) orelse return c.JNI_FALSE;
+    const parent_ssh = parent.session orelse return c.JNI_FALSE;
+    session.parent = parent;
+    session.socket_fd = parent.socket_fd;
+    const host_slice = jniDupString(env, host) orelse return c.JNI_FALSE;
+    defer allocator.free(host_slice);
+    const host_z = dupSentinel(host_slice) orelse return c.JNI_FALSE;
+    defer allocator.free(host_z);
+    session.username = jniDupString(env, username) orelse return c.JNI_FALSE;
+    const deadline_ms = nowMs() + setup_wait_timeout_ms;
+    parent.setup_deadline_ms = deadline_ms;
+    while (session.forwarding_channel == null) {
+        session.forwarding_channel = c.libssh2_channel_direct_tcpip_ex(parent_ssh, host_z.ptr, port, "127.0.0.1", 0);
+        if (session.forwarding_channel != null) break;
+        const rc = c.libssh2_session_last_errno(parent_ssh);
+        if (rc != c.LIBSSH2_ERROR_EAGAIN) {
+            setLibssh2Error(parent, "TCP forwarding failed", rc);
+            setError(session, "{s}", .{parent.last_error.items});
+            return c.JNI_FALSE;
+        }
+        if (nowMs() >= deadline_ms or !waitSocket(parent, setup_wait_timeout_ms)) {
+            setError(session, "TCP forwarding timed out", .{});
+            return c.JNI_FALSE;
+        }
+    }
+    const ssh_session = c.ichuchu_ssh_session_init_forwarded(session.forwarding_channel.?) orelse return c.JNI_FALSE;
+    session.session = ssh_session;
+    c.libssh2_session_set_blocking(ssh_session, 0);
+    return if (finishHandshake(session, ssh_session, session.socket_fd)) c.JNI_TRUE else c.JNI_FALSE;
+}
+
+/// Cancellation is observed by bounded socket polls and never touches libssh2
+/// state. Kotlin serializes this call with handle destruction.
+export fn Java_io_github_kontsevoye_ichuchu_service_ssh_NativeSshBridge_nativeInterrupt(env: *c.JNIEnv, thiz: c.jobject, handle: c.jlong) callconv(.c) void {
+    _ = env;
+    _ = thiz;
+    var root = sessionFromHandle(handle) orelse return;
+    while (root.parent) |parent| root = parent;
+    root.cancelled.store(true, .release);
 }
 
 export fn Java_io_github_kontsevoye_ichuchu_service_ssh_NativeSshBridge_nativeAuthenticateNone(env: *c.JNIEnv, thiz: c.jobject, handle: c.jlong) callconv(.c) c.jboolean {
     _ = env;
     _ = thiz;
     const session = sessionFromHandle(handle) orelse return c.JNI_FALSE;
+    session.setup_deadline_ms = nowMs() + setup_wait_timeout_ms;
     const ssh_session = session.session orelse {
         setError(session, "Not connected", .{});
         return c.JNI_FALSE;
@@ -618,7 +716,7 @@ export fn Java_io_github_kontsevoye_ichuchu_service_ssh_NativeSshBridge_nativeAu
         setError(session, "Missing username", .{});
         return c.JNI_FALSE;
     };
-    c.libssh2_session_set_blocking(ssh_session, 1);
+    c.libssh2_session_set_blocking(ssh_session, 0);
     defer c.libssh2_session_set_blocking(ssh_session, 0);
     logInfo("nativeAuthenticateNone user={s}", .{username_slice});
     if (c.libssh2_userauth_authenticated(ssh_session) != 0) {
@@ -685,6 +783,7 @@ export fn Java_io_github_kontsevoye_ichuchu_service_ssh_NativeSshBridge_nativeGe
 export fn Java_io_github_kontsevoye_ichuchu_service_ssh_NativeSshBridge_nativeAuthenticatePassword(env: *c.JNIEnv, thiz: c.jobject, handle: c.jlong, password: c.jstring) callconv(.c) c.jboolean {
     _ = thiz;
     const session = sessionFromHandle(handle) orelse return c.JNI_FALSE;
+    session.setup_deadline_ms = nowMs() + setup_wait_timeout_ms;
     const ssh_session = session.session orelse {
         setError(session, "Not connected", .{});
         return c.JNI_FALSE;
@@ -698,7 +797,7 @@ export fn Java_io_github_kontsevoye_ichuchu_service_ssh_NativeSshBridge_nativeAu
         return c.JNI_FALSE;
     };
     defer allocator.free(password_slice);
-    c.libssh2_session_set_blocking(ssh_session, 1);
+    c.libssh2_session_set_blocking(ssh_session, 0);
     defer c.libssh2_session_set_blocking(ssh_session, 0);
     logInfo("Password auth attempt start username_len={} password_len={}", .{ username_slice.len, password_slice.len });
     const password_deadline_ms = nowMs() + setup_wait_timeout_ms;
@@ -725,6 +824,7 @@ export fn Java_io_github_kontsevoye_ichuchu_service_ssh_NativeSshBridge_nativeAu
 export fn Java_io_github_kontsevoye_ichuchu_service_ssh_NativeSshBridge_nativeAuthenticatePublicKey(env: *c.JNIEnv, thiz: c.jobject, handle: c.jlong, key_path: c.jstring, passphrase: c.jstring) callconv(.c) c.jboolean {
     _ = thiz;
     const session = sessionFromHandle(handle) orelse return c.JNI_FALSE;
+    session.setup_deadline_ms = nowMs() + setup_wait_timeout_ms;
     const ssh_session = session.session orelse {
         setError(session, "Not connected", .{});
         return c.JNI_FALSE;
@@ -750,7 +850,7 @@ export fn Java_io_github_kontsevoye_ichuchu_service_ssh_NativeSshBridge_nativeAu
     defer if (passphrase_z) |pz| allocator.free(pz);
     const passphrase_ptr: ?[*:0]const u8 = if (passphrase_z) |pz| pz.ptr else null;
 
-    c.libssh2_session_set_blocking(ssh_session, 1);
+    c.libssh2_session_set_blocking(ssh_session, 0);
     defer c.libssh2_session_set_blocking(ssh_session, 0);
 
     logInfo("Public key auth attempt key={s}", .{key_path_slice});
@@ -793,6 +893,7 @@ export fn Java_io_github_kontsevoye_ichuchu_service_ssh_NativeSshBridge_nativeAu
 export fn Java_io_github_kontsevoye_ichuchu_service_ssh_NativeSshBridge_nativeAuthenticatePublicKeyMemory(env: *c.JNIEnv, thiz: c.jobject, handle: c.jlong, public_key_open_ssh: c.jstring, private_key_pem: c.jstring, passphrase: c.jstring) callconv(.c) c.jboolean {
     _ = thiz;
     const session = sessionFromHandle(handle) orelse return c.JNI_FALSE;
+    session.setup_deadline_ms = nowMs() + setup_wait_timeout_ms;
     const ssh_session = session.session orelse {
         setError(session, "Not connected", .{});
         return c.JNI_FALSE;
@@ -825,15 +926,8 @@ export fn Java_io_github_kontsevoye_ichuchu_service_ssh_NativeSshBridge_nativeAu
     defer if (passphrase_z) |pz| allocator.free(pz);
     const passphrase_ptr: ?[*:0]const u8 = if (passphrase_z) |pz| pz.ptr else null;
 
-    c.libssh2_session_set_blocking(ssh_session, 1);
+    c.libssh2_session_set_blocking(ssh_session, 0);
     defer c.libssh2_session_set_blocking(ssh_session, 0);
-
-    const auth_list_ptr = c.libssh2_userauth_list(ssh_session, username_slice.ptr, @intCast(username_slice.len));
-    if (auth_list_ptr != null) {
-        logInfo("Public key memory auth methods user={s} methods={s}", .{ username_slice, std.mem.span(auth_list_ptr) });
-    } else {
-        logInfo("Public key memory auth methods user={s} methods=<none>", .{username_slice});
-    }
 
     logInfo(
         "Public key memory auth attempt user={s} publicLen={} privateLen={} passphraseLen={}",
@@ -882,6 +976,7 @@ export fn Java_io_github_kontsevoye_ichuchu_service_ssh_NativeSshBridge_nativeAu
 export fn Java_io_github_kontsevoye_ichuchu_service_ssh_NativeSshBridge_nativeOpenShell(env: *c.JNIEnv, thiz: c.jobject, handle: c.jlong, cols: c.jint, rows: c.jint, width_px: c.jint, height_px: c.jint, term: c.jstring) callconv(.c) c.jboolean {
     _ = thiz;
     const session = sessionFromHandle(handle) orelse return c.JNI_FALSE;
+    session.setup_deadline_ms = nowMs() + setup_wait_timeout_ms;
     const ssh_session = session.session orelse {
         setError(session, "Not connected", .{});
         return c.JNI_FALSE;
@@ -954,6 +1049,7 @@ export fn Java_io_github_kontsevoye_ichuchu_service_ssh_NativeSshBridge_nativeOp
 export fn Java_io_github_kontsevoye_ichuchu_service_ssh_NativeSshBridge_nativeOpenExec(env: *c.JNIEnv, thiz: c.jobject, handle: c.jlong, command: c.jstring) callconv(.c) c.jboolean {
     _ = thiz;
     const session = sessionFromHandle(handle) orelse return c.JNI_FALSE;
+    session.setup_deadline_ms = nowMs() + setup_wait_timeout_ms;
     const ssh_session = session.session orelse {
         setError(session, "Not connected", .{});
         return c.JNI_FALSE;
@@ -1014,6 +1110,7 @@ export fn Java_io_github_kontsevoye_ichuchu_service_ssh_NativeSshBridge_nativeOp
 export fn Java_io_github_kontsevoye_ichuchu_service_ssh_NativeSshBridge_nativeOpenExecPty(env: *c.JNIEnv, thiz: c.jobject, handle: c.jlong, command: c.jstring, cols: c.jint, rows: c.jint, width_px: c.jint, height_px: c.jint, term: c.jstring) callconv(.c) c.jboolean {
     _ = thiz;
     const session = sessionFromHandle(handle) orelse return c.JNI_FALSE;
+    session.setup_deadline_ms = nowMs() + setup_wait_timeout_ms;
     const ssh_session = session.session orelse {
         setError(session, "Not connected", .{});
         return c.JNI_FALSE;
@@ -1107,6 +1204,7 @@ export fn Java_io_github_kontsevoye_ichuchu_service_ssh_NativeSshBridge_nativeRe
     _ = env;
     _ = thiz;
     const session = sessionFromHandle(handle) orelse return c.JNI_FALSE;
+    session.setup_deadline_ms = nowMs() + setup_wait_timeout_ms;
     const channel = session.channel orelse return c.JNI_FALSE;
     while (true) {
         const rc = c.libssh2_channel_request_pty_size_ex(channel, cols, rows, width_px, height_px);
@@ -1174,29 +1272,7 @@ export fn Java_io_github_kontsevoye_ichuchu_service_ssh_NativeSshBridge_nativeCl
     _ = env;
     _ = thiz;
     const session = sessionFromHandle(handle) orelse return;
-    // Best-effort SFTP teardown: even if it stalls (e.g. the peer is gone), we
-    // must still free the channel, session, and socket below. libssh2_session_free
-    // releases any remaining SFTP state, so a stalled shutdown is not fatal here.
-    if (session.upload_handle) |upload_handle| {
-        _ = closeSftpHandle(session, upload_handle, "native close upload handle");
-        session.upload_handle = null;
-    }
-    if (session.sftp) |sftp| {
-        _ = shutdownSftp(session, sftp, "native close");
-        session.sftp = null;
-    }
-    if (session.channel) |channel| {
-        _ = c.libssh2_channel_close(channel);
-        _ = c.libssh2_channel_free(channel);
-        session.channel = null;
-    }
-    if (session.session) |ssh_session| {
-        _ = c.libssh2_session_disconnect_ex(ssh_session, c.SSH_DISCONNECT_BY_APPLICATION, "bye", "en");
-        _ = c.libssh2_session_free(ssh_session);
-        session.session = null;
-    }
-    closeSocket(session.socket_fd);
-    session.socket_fd = -1;
+    closeNativeTransport(session);
 }
 
 export fn Java_io_github_kontsevoye_ichuchu_service_ssh_NativeSshBridge_nativeSftpInit(env: *c.JNIEnv, thiz: c.jobject, handle: c.jlong) callconv(.c) c.jboolean {
@@ -1393,6 +1469,10 @@ export fn Java_io_github_kontsevoye_ichuchu_service_ssh_NativeSshBridge_nativeSf
     var written: usize = 0;
     var idle_since_ms: i64 = std.time.milliTimestamp();
     while (written < @as(usize, @intCast(data_len))) {
+        if (transportCancelled(session)) {
+            setError(session, "SFTP upload cancelled", .{});
+            return -1;
+        }
         const remaining: usize = @as(usize, @intCast(data_len)) - written;
         const chunk_size: usize = @min(remaining, 32768);
         const rc = c.libssh2_sftp_write(sftp_handle, ptr + written, chunk_size);
@@ -1425,6 +1505,7 @@ export fn Java_io_github_kontsevoye_ichuchu_service_ssh_NativeSshBridge_nativeSf
     const close_idle_limit_ms: i64 = 10_000;
     var idle_since_ms: i64 = std.time.milliTimestamp();
     while (true) {
+        if (transportCancelled(session)) return c.JNI_FALSE;
         const rc = c.libssh2_sftp_close_handle(sftp_handle);
         if (rc == 0) return c.JNI_TRUE;
         if (rc == c.LIBSSH2_ERROR_EAGAIN) {
@@ -1466,15 +1547,31 @@ export fn Java_io_github_kontsevoye_ichuchu_service_ssh_NativeSshBridge_nativeSf
     defer out.deinit(allocator);
     const limit: usize = if (max_bytes <= 0) 4096 else @intCast(max_bytes);
     var buf: [32768]u8 = undefined;
+    var idle_since_ms = nowMs();
     while (out.items.len < limit) {
+        if (transportCancelled(session)) {
+            setError(session, "SFTP read cancelled", .{});
+            return null;
+        }
         const want = @min(buf.len, limit - out.items.len);
         const rc = c.libssh2_sftp_read(file, &buf, want);
         if (rc > 0) {
             out.appendSlice(allocator, buf[0..@intCast(rc)]) catch return null;
+            idle_since_ms = nowMs();
             continue;
         }
         if (rc == 0) break;
-        if (rc == c.LIBSSH2_ERROR_EAGAIN and waitSocket(session, io_wait_timeout_ms)) continue;
+        // Rekey can legitimately leave the root socket idle for more than one
+        // short poll. EAGAIN is not a read failure; retry until actual progress
+        // stalls, rather than reporting libssh2's transient last-error string.
+        if (rc == c.LIBSSH2_ERROR_EAGAIN) {
+            if (nowMs() - idle_since_ms >= sftp_idle_limit_ms) {
+                setError(session, "SFTP read stalled", .{});
+                return null;
+            }
+            _ = waitSocket(session, io_wait_timeout_ms);
+            continue;
+        }
         setLibssh2Error(session, "SFTP read failed", @intCast(rc));
         return null;
     }

@@ -8,20 +8,28 @@ class NativeSshBridge {
 
     fun isLoaded(): Boolean = loadError == null
 
-    fun nativeStatus(): String {
-        return if (loadError == null) {
+    fun nativeStatus(): String = if (loadError == null) {
             "loaded"
         } else {
             val message = loadError.message?.takeIf { it.isNotBlank() } ?: "unknown"
             "not loaded (${loadError::class.simpleName}: $message)"
         }
-    }
 
     external fun nativeCreateSession(): Long
 
     external fun nativeDestroySession(handle: Long)
 
     external fun nativeConnect(handle: Long, host: String, port: Int, username: String): Boolean
+
+    external fun nativeConnectVia(
+        handle: Long,
+        parentHandle: Long,
+        host: String,
+        port: Int,
+        username: String,
+    ): Boolean
+
+    external fun nativeInterrupt(handle: Long)
 
     external fun nativeGetLastError(handle: Long): String?
 

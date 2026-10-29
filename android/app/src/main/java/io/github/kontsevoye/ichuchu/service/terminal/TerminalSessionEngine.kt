@@ -1,6 +1,5 @@
 package io.github.kontsevoye.ichuchu.service.terminal
 
-import android.content.ClipData
 import android.util.Log
 import io.github.kontsevoye.ichuchu.model.AuthMethod
 import io.github.kontsevoye.ichuchu.model.MultiplexerType
@@ -18,6 +17,10 @@ import io.github.kontsevoye.ichuchu.service.multiplexer.RemoteMultiplexerSession
 import io.github.kontsevoye.ichuchu.service.ssh.HostKeyCheck
 import io.github.kontsevoye.ichuchu.service.ssh.HostKeyStore
 import io.github.kontsevoye.ichuchu.service.ssh.NativeSshService
+import io.github.kontsevoye.ichuchu.service.ssh.SshConnectionException
+import io.github.kontsevoye.ichuchu.service.ssh.SshHostKeyRequest
+import io.github.kontsevoye.ichuchu.service.ssh.SshJumpHost
+import io.github.kontsevoye.ichuchu.service.ssh.SshRouteSnapshot
 import io.github.kontsevoye.ichuchu.service.ssh.TailscaleStatusChecker
 import java.util.concurrent.Executors
 import kotlinx.coroutines.CancellationException
@@ -55,12 +58,14 @@ data class SessionState(
     val bellCount: Int = 0,
     val nativeVersion: String? = null,
     val reconnectAttempt: Int = 0,
+    val connectionProgress: String? = null,
     val error: String? = null,
     val handle: Long = 0,
     val shellExited: Boolean = false,
 )
 
 data class HostKeyPrompt(
+    val routeLabel: String = "",
     val host: String,
     val port: Int,
     val algorithm: String,
@@ -76,7 +81,10 @@ class TerminalSessionEngine(
     private val tailscaleStatusChecker: TailscaleStatusChecker,
 ) {
     private data class MoshReadResult(val shellExited: Boolean, val failureCode: Int?)
+
     private data class ConnectionParams(
+        val routeSnapshot: SshRouteSnapshot? = null,
+        val jumpHosts: List<SshJumpHost> = emptyList(),
         val host: String,
         val port: Int,
         val username: String,
@@ -93,7 +101,13 @@ class TerminalSessionEngine(
     ) {
         fun multiplexerStartupCommand(): String? {
             val type = multiplexer ?: return null
-            if (!type.runtimeSupported || transport == Transport.Mosh || transport == Transport.LocalShell) return null
+            if (
+                !type.runtimeSupported ||
+                    transport == Transport.Mosh ||
+                    transport == Transport.LocalShell
+            ) {
+                return null
+            }
             val sessionName = multiplexerSessionName?.takeIf { it.isNotBlank() } ?: return null
             val runtime = MultiplexerRegistry.forType(type) ?: return null
             return runtime.launchCommand(
@@ -133,8 +147,9 @@ class TerminalSessionEngine(
     private var pendingDefaultColors: DefaultColors? = null
     private var lastConnectionParams: ConnectionParams? = null
     private var reconnectJob: Job? = null
-    private var disconnectRequested = false
-
+    @Volatile private var disconnectRequested = false
+    @Volatile private var auxiliarySsh: NativeSshService? = null
+    private val hostKeyLock = Any()
 
     private val nativeVersion =
         if (bridge.isLoaded()) {
@@ -158,6 +173,8 @@ class TerminalSessionEngine(
     private var hostKeyDecision: CompletableDeferred<Boolean>? = null
 
     fun connect(
+        routeSnapshot: SshRouteSnapshot? = null,
+        jumpHosts: List<SshJumpHost> = emptyList(),
         host: String,
         port: Int,
         username: String,
@@ -176,6 +193,8 @@ class TerminalSessionEngine(
         disconnectRequested = false
         val params =
             ConnectionParams(
+                routeSnapshot = routeSnapshot,
+                jumpHosts = jumpHosts,
                 host = host,
                 port = port,
                 username = username,
@@ -244,10 +263,11 @@ class TerminalSessionEngine(
                 return@launch
             }
             val multiplexerAvailability = checkMultiplexerAvailability(params)
-            val multiplexerError = multiplexerAvailabilityErrorMessage(
-                availability = multiplexerAvailability,
-                selectedType = params.multiplexer,
-            )
+            val multiplexerError =
+                multiplexerAvailabilityErrorMessage(
+                    availability = multiplexerAvailability,
+                    selectedType = params.multiplexer,
+                )
             if (multiplexerError != null) {
                 _state.value =
                     SessionState(
@@ -278,6 +298,8 @@ class TerminalSessionEngine(
                         error = "Native terminal backend unavailable: ${e.message}",
                     )
             } catch (e: Exception) {
+                nativeSsh.close()
+                if (disconnectRequested) return@launch
                 Log.e("TerminalSession", "Connect failed", e)
                 _state.value =
                     SessionState(
@@ -474,8 +496,7 @@ class TerminalSessionEngine(
     suspend fun sftpWriteChunk(data: ByteArray): Int =
         withContext(dispatcher) { nativeSsh.sftpWriteChunk(data) }
 
-    suspend fun sftpCloseWrite() =
-        withContext(dispatcher) { nativeSsh.sftpCloseWrite() }
+    suspend fun sftpCloseWrite() = withContext(dispatcher) { nativeSsh.sftpCloseWrite() }
 
     suspend fun sftpReadFile(path: String, maxBytes: Int): ByteArray =
         withContext(dispatcher) { nativeSsh.sftpReadFile(path, maxBytes) }
@@ -490,50 +511,59 @@ class TerminalSessionEngine(
 
     private fun checkMultiplexerAvailability(params: ConnectionParams): MultiplexerAvailability {
         val type = params.multiplexer ?: return MultiplexerAvailability.Available
-        val multiplexer = MultiplexerRegistry.forType(type)
-            ?: return MultiplexerAvailability.UnsupportedMultiplexer(type)
+        val multiplexer =
+            MultiplexerRegistry.forType(type)
+                ?: return MultiplexerAvailability.UnsupportedMultiplexer(type)
         if (params.transport == Transport.Mosh || params.transport == Transport.LocalShell) {
             return MultiplexerAvailability.UnsupportedTransport(params.transport)
         }
         return runCatching {
-            val result = runMultiplexerCommand(params, multiplexer.availabilityCommand())
-            if (result.isSuccess) {
-                MultiplexerAvailability.Available
-            } else {
-                MultiplexerAvailability.Missing(type)
+                val result = runMultiplexerCommand(params, multiplexer.availabilityCommand())
+                if (result.isSuccess) {
+                    MultiplexerAvailability.Available
+                } else {
+                    MultiplexerAvailability.Missing(type)
+                }
             }
-        }.getOrElse { error ->
-            MultiplexerAvailability.Error(
-                message = error.message ?: "Could not check ${type.label} on this host",
-            )
-        }
+            .getOrElse { error ->
+                MultiplexerAvailability.Error(
+                    message = error.message ?: "Could not check ${type.label} on this host"
+                )
+            }
     }
 
     private fun multiplexerAvailabilityErrorMessage(
         availability: MultiplexerAvailability,
         selectedType: MultiplexerType?,
-    ): String? = when (availability) {
-        MultiplexerAvailability.Available -> null
-        is MultiplexerAvailability.Missing ->
-            "${availability.multiplexer.label} executable was not found on the remote host"
-        is MultiplexerAvailability.UnsupportedMultiplexer ->
-            "${availability.multiplexer.label} is not supported yet"
-        is MultiplexerAvailability.UnsupportedTransport ->
-            "${selectedType?.label ?: "Multiplexer"} is not supported for ${availability.transport}"
-        is MultiplexerAvailability.Error -> availability.message
-    }
+    ): String? =
+        when (availability) {
+            MultiplexerAvailability.Available -> null
+            is MultiplexerAvailability.Missing ->
+                "${availability.multiplexer.label} executable was not found on the remote host"
+            is MultiplexerAvailability.UnsupportedMultiplexer ->
+                "${availability.multiplexer.label} is not supported yet"
+            is MultiplexerAvailability.UnsupportedTransport ->
+                "${selectedType?.label ?: "Multiplexer"} is not supported for ${availability.transport}"
+            is MultiplexerAvailability.Error -> availability.message
+        }
 
     suspend fun listMultiplexerSessions(spec: TabSpec): List<RemoteMultiplexerSession> =
         withContext(dispatcher) {
             val type = spec.multiplexer ?: throw IllegalStateException("No multiplexer selected")
-            val multiplexer = MultiplexerRegistry.forType(type)
-                ?: throw IllegalStateException("${type.label} is not supported yet")
+            val multiplexer =
+                MultiplexerRegistry.forType(type)
+                    ?: throw IllegalStateException("${type.label} is not supported yet")
             if (spec.transport == Transport.Mosh || spec.transport == Transport.LocalShell) {
-                throw IllegalStateException("${type.label} is not supported for ${spec.transport} connections")
+                throw IllegalStateException(
+                    "${type.label} is not supported for ${spec.transport} connections"
+                )
             }
-            val result = runMultiplexerCommand(spec.toConnectionParams(), multiplexer.listSessionsCommand())
+            val result =
+                runMultiplexerCommand(spec.toConnectionParams(), multiplexer.listSessionsCommand())
             if (!result.isSuccess) {
-                throw IllegalStateException(result.stderr.ifBlank { "Failed to list ${type.label} sessions" })
+                throw IllegalStateException(
+                    result.stderr.ifBlank { "Failed to list ${type.label} sessions" }
+                )
             }
             multiplexer.parseSessions(result.stdout)
         }
@@ -542,44 +572,61 @@ class TerminalSessionEngine(
         spec: TabSpec,
         localSessionNames: Collection<String>,
         reuseDetachedIchuchuSession: Boolean = false,
-    ): String = withContext(dispatcher) {
-        val type = spec.multiplexer ?: MultiplexerRegistry.defaultType
-        val multiplexer = MultiplexerRegistry.forType(type)
-            ?: throw IllegalStateException("${type.label} is not supported yet")
-        if (spec.transport == Transport.Mosh || spec.transport == Transport.LocalShell) {
-            throw IllegalStateException("${type.label} is not supported for ${spec.transport} connections")
+    ): String =
+        withContext(dispatcher) {
+            val type = spec.multiplexer ?: MultiplexerRegistry.defaultType
+            val multiplexer =
+                MultiplexerRegistry.forType(type)
+                    ?: throw IllegalStateException("${type.label} is not supported yet")
+            if (spec.transport == Transport.Mosh || spec.transport == Transport.LocalShell) {
+                throw IllegalStateException(
+                    "${type.label} is not supported for ${spec.transport} connections"
+                )
+            }
+            when (val availability = checkMultiplexerAvailability(spec.copy(multiplexer = type))) {
+                MultiplexerAvailability.Available -> Unit
+                is MultiplexerAvailability.Missing ->
+                    throw IllegalStateException(
+                        "${availability.multiplexer.label} executable was not found on the remote host"
+                    )
+                is MultiplexerAvailability.UnsupportedMultiplexer ->
+                    throw IllegalStateException(
+                        "${availability.multiplexer.label} is not supported yet"
+                    )
+                is MultiplexerAvailability.UnsupportedTransport ->
+                    throw IllegalStateException(
+                        "${type.label} is not supported for ${availability.transport}"
+                    )
+                is MultiplexerAvailability.Error ->
+                    throw IllegalStateException(availability.message)
+            }
+            val remoteSessions = listMultiplexerSessions(spec.copy(multiplexer = type))
+            val existingName = spec.multiplexerSessionName?.takeIf { it.isNotBlank() }
+            if (existingName != null && spec.multiplexerCreateIfMissing) {
+                return@withContext existingName
+            }
+            if (existingName != null) {
+                if (remoteSessions.any { it.name == existingName }) return@withContext existingName
+                throw IllegalStateException(
+                    "${type.label} session \"$existingName\" is no longer available"
+                )
+            }
+            if (reuseDetachedIchuchuSession) {
+                MultiplexerSessionAllocator.reusableDetachedIchuchuSessionName(
+                        remoteSessions = remoteSessions,
+                        localSessionNames = localSessionNames,
+                    )
+                    ?.let {
+                        return@withContext it
+                    }
+            }
+            multiplexer.defaultSessionName(remoteSessions, localSessionNames)
         }
-        when (val availability = checkMultiplexerAvailability(spec.copy(multiplexer = type))) {
-            MultiplexerAvailability.Available -> Unit
-            is MultiplexerAvailability.Missing -> throw IllegalStateException(
-                "${availability.multiplexer.label} executable was not found on the remote host",
-            )
-            is MultiplexerAvailability.UnsupportedMultiplexer -> throw IllegalStateException(
-                "${availability.multiplexer.label} is not supported yet",
-            )
-            is MultiplexerAvailability.UnsupportedTransport -> throw IllegalStateException(
-                "${type.label} is not supported for ${availability.transport}",
-            )
-            is MultiplexerAvailability.Error -> throw IllegalStateException(availability.message)
-        }
-        val remoteSessions = listMultiplexerSessions(spec.copy(multiplexer = type))
-        val existingName = spec.multiplexerSessionName?.takeIf { it.isNotBlank() }
-        if (existingName != null && spec.multiplexerCreateIfMissing) return@withContext existingName
-        if (existingName != null) {
-            if (remoteSessions.any { it.name == existingName }) return@withContext existingName
-            throw IllegalStateException("${type.label} session \"$existingName\" is no longer available")
-        }
-        if (reuseDetachedIchuchuSession) {
-            MultiplexerSessionAllocator.reusableDetachedIchuchuSessionName(
-                remoteSessions = remoteSessions,
-                localSessionNames = localSessionNames,
-            )?.let { return@withContext it }
-        }
-        multiplexer.defaultSessionName(remoteSessions, localSessionNames)
-    }
 
     fun disconnect() {
         disconnectRequested = true
+        nativeSsh.interrupt()
+        auxiliarySsh?.interrupt()
         reconnectJob?.cancel()
         reconnectJob = null
         lastConnectionParams = null
@@ -614,46 +661,68 @@ class TerminalSessionEngine(
         dispatcher.close()
     }
 
-    private fun cancelHostKeyPrompt() {
-        hostKeyDecision?.cancel()
-        hostKeyDecision = null
-        _hostKeyPrompt.value = null
-    }
+    private fun cancelHostKeyPrompt() =
+        synchronized(hostKeyLock) {
+            hostKeyDecision?.cancel()
+            hostKeyDecision = null
+            _hostKeyPrompt.value = null
+        }
 
-    fun respondToHostKey(accepted: Boolean) {
-        hostKeyDecision?.complete(accepted)
-        hostKeyDecision = null
-        _hostKeyPrompt.value = null
-    }
+    fun respondToHostKey(accepted: Boolean) =
+        synchronized(hostKeyLock) {
+            hostKeyDecision?.complete(accepted)
+            hostKeyDecision = null
+            _hostKeyPrompt.value = null
+        }
 
-    private fun verifyHostKey(
-        host: String,
-        port: Int,
-        algorithm: String,
-        keyBytes: ByteArray,
-    ): Boolean {
+    private fun verifyHostKey(request: SshHostKeyRequest): Boolean {
         val (fingerprint, previousFingerprint) =
-            when (val result = hostKeyStore.check(host, port, algorithm, keyBytes)) {
+            when (
+                val result =
+                    hostKeyStore.check(
+                        request.trustHost,
+                        request.port,
+                        request.algorithm,
+                        request.keyBytes,
+                    )
+            ) {
                 is HostKeyCheck.Match -> return true
                 is HostKeyCheck.Unknown -> result.fingerprint to null
-                is HostKeyCheck.Changed -> result.fingerprint to result.previousFingerprint
+                is HostKeyCheck.Changed -> {
+                    if (_state.value.status == SessionStatus.Reconnecting) {
+                        throw SshConnectionException(
+                            "${request.routeLabel}: host key changed; reconnect manually to review",
+                            false,
+                        )
+                    }
+                    result.fingerprint to result.previousFingerprint
+                }
             }
         val deferred =
-            hostKeyDecision
-                ?: CompletableDeferred<Boolean>().also {
-                    hostKeyDecision = it
-                    _hostKeyPrompt.value =
-                        HostKeyPrompt(
-                            host = host,
-                            port = port,
-                            algorithm = algorithm,
-                            fingerprint = fingerprint,
-                            previousFingerprint = previousFingerprint,
-                        )
-                }
+            synchronized(hostKeyLock) {
+                if (disconnectRequested) throw CancellationException("Connection cancelled")
+                hostKeyDecision
+                    ?: CompletableDeferred<Boolean>().also {
+                        hostKeyDecision = it
+                        _hostKeyPrompt.value =
+                            HostKeyPrompt(
+                                routeLabel = request.routeLabel,
+                                host = request.host,
+                                port = request.port,
+                                algorithm = request.algorithm,
+                                fingerprint = fingerprint,
+                                previousFingerprint = previousFingerprint,
+                            )
+                    }
+            }
         val accepted = runBlocking { deferred.await() }
         if (accepted) {
-            hostKeyStore.saveKey(host, port, algorithm, keyBytes)
+            hostKeyStore.saveKey(
+                request.trustHost,
+                request.port,
+                request.algorithm,
+                request.keyBytes,
+            )
         }
         return accepted
     }
@@ -699,11 +768,12 @@ class TerminalSessionEngine(
                             // EOF ends this shell; it is not a dropped connection to retry.
                             disconnectRequested = true
                             lastConnectionParams = null
-                            _state.value = _state.value.copy(
-                                status = SessionStatus.Disconnected,
-                                shellExited = true,
-                                error = null,
-                            )
+                            _state.value =
+                                _state.value.copy(
+                                    status = SessionStatus.Disconnected,
+                                    shellExited = true,
+                                    error = null,
+                                )
                         }
                     }
                     ReadLoopExitAction.RequireManualReconnect -> {
@@ -713,11 +783,13 @@ class TerminalSessionEngine(
                             _state.value =
                                 _state.value.copy(
                                     status = SessionStatus.Error,
-                                    error = "Mosh session ended$failure. Reconnect to start a new session.",
+                                    error =
+                                        "Mosh session ended$failure. Reconnect to start a new session.",
                                 )
                         }
                     }
-                    ReadLoopExitAction.AutomaticReconnect -> scheduleReconnect("Connection interrupted")
+                    ReadLoopExitAction.AutomaticReconnect ->
+                        scheduleReconnect("Connection interrupted")
                 }
             }
     }
@@ -856,6 +928,12 @@ class TerminalSessionEngine(
     }
 
     private suspend fun establishConnection(params: ConnectionParams, username: String) {
+        try {
+            params.routeSnapshot?.requireCurrent()
+        } catch (e: Exception) {
+            throw SshConnectionException(e.message ?: "SSH route changed", false, e)
+        }
+        if (disconnectRequested) throw CancellationException("Connection cancelled")
         if (handle != 0L) {
             bridge.nativeDestroy(handle)
             handle = 0L
@@ -866,6 +944,9 @@ class TerminalSessionEngine(
         handle = bridge.nativeCreate(cols, rows, 1000)
         applyTerminalOptions()
 
+        require(params.jumpHosts.isEmpty() || params.transport == Transport.SSH) {
+            "Jump hosts currently require SSH transport"
+        }
         when (params.transport) {
             Transport.Mosh -> establishMoshConnection(params, username)
             Transport.LocalShell -> establishLocalShellConnection()
@@ -880,6 +961,11 @@ class TerminalSessionEngine(
     private fun establishSshConnection(params: ConnectionParams, username: String) {
         check(nativeSsh.isAvailable()) { "Native SSH unavailable" }
         nativeSsh.connect(
+            isCancelled = { disconnectRequested },
+            onProgress = { progress ->
+                _state.value = _state.value.copy(connectionProgress = progress)
+            },
+            jumpHosts = params.jumpHosts,
             host = params.host,
             port = params.port,
             username = username,
@@ -901,6 +987,11 @@ class TerminalSessionEngine(
         Log.d("TerminalSession", "MOSH: Phase 1 — SSH bootstrap start")
         check(nativeSsh.isAvailable()) { "Native SSH unavailable for mosh bootstrap" }
         nativeSsh.connect(
+            isCancelled = { disconnectRequested },
+            onProgress = { progress ->
+                _state.value = _state.value.copy(connectionProgress = progress)
+            },
+            jumpHosts = params.jumpHosts,
             host = params.host,
             port = params.port,
             username = username,
@@ -949,8 +1040,14 @@ class TerminalSessionEngine(
                                     put("host", result.endpoint.host)
                                     put("port", result.endpoint.port)
                                     put("keyBase64_22", result.endpoint.key)
-                                    put("networkTimeoutMs", MoshReconnectPolicy.CLIENT_NETWORK_TIMEOUT_MS)
-                                    put("maxRetransmitCount", MoshReconnectPolicy.CLIENT_MAX_RETRANSMIT_COUNT)
+                                    put(
+                                        "networkTimeoutMs",
+                                        MoshReconnectPolicy.CLIENT_NETWORK_TIMEOUT_MS,
+                                    )
+                                    put(
+                                        "maxRetransmitCount",
+                                        MoshReconnectPolicy.CLIENT_MAX_RETRANSMIT_COUNT,
+                                    )
                                     put("useNetworkCrypto", true)
                                 }
                                 .toString()
@@ -961,7 +1058,10 @@ class TerminalSessionEngine(
                         if (!moshService.start()) {
                             throw IllegalStateException("Failed to start mosh client")
                         }
-                        Log.d("TerminalSession", "MOSH: mosh client started, resizing $cols x $rows")
+                        Log.d(
+                            "TerminalSession",
+                            "MOSH: mosh client started, resizing $cols x $rows",
+                        )
                         moshService.resize(cols, rows)
                         return true
                     }
@@ -978,7 +1078,10 @@ class TerminalSessionEngine(
 
         var found = readBootstrapWindow(timeoutMs = 10_000)
         if (!found && execOpened && outputBuffer.isEmpty() && !nativeSsh.isChannelEof()) {
-            Log.w("TerminalSession", "MOSH: bootstrap still running after 10s with no output; extending window by 15s")
+            Log.w(
+                "TerminalSession",
+                "MOSH: bootstrap still running after 10s with no output; extending window by 15s",
+            )
             found = readBootstrapWindow(timeoutMs = 15_000)
         }
         if (!found) {
@@ -1001,43 +1104,60 @@ class TerminalSessionEngine(
         Log.d("TerminalSession", "MOSH: Phase 2 — mosh client ready")
     }
 
-    private fun TabSpec.toConnectionParams(): ConnectionParams = ConnectionParams(
-        host = host,
-        port = port,
-        username = username,
-        password = password,
-        authMethod = authMethod,
-        publicKeyOpenSsh = publicKeyOpenSsh,
-        privateKeyPem = privateKeyPem,
-        keyPassphrase = keyPassphrase,
-        transport = transport,
-        postConnectCommand = postConnectCommand,
-        multiplexer = multiplexer,
-        multiplexerSessionName = multiplexerSessionName,
-        multiplexerCreateIfMissing = multiplexerCreateIfMissing,
-    )
+    private fun TabSpec.toConnectionParams(): ConnectionParams =
+        ConnectionParams(
+            routeSnapshot = routeSnapshot,
+            jumpHosts = jumpHosts,
+            host = host,
+            port = port,
+            username = username,
+            password = password,
+            authMethod = authMethod,
+            publicKeyOpenSsh = publicKeyOpenSsh,
+            privateKeyPem = privateKeyPem,
+            keyPassphrase = keyPassphrase,
+            transport = transport,
+            postConnectCommand = postConnectCommand,
+            multiplexer = multiplexer,
+            multiplexerSessionName = multiplexerSessionName,
+            multiplexerCreateIfMissing = multiplexerCreateIfMissing,
+        )
 
     private fun runMultiplexerCommand(
         params: ConnectionParams,
         command: String,
         timeoutMs: Long = 20_000,
     ): MultiplexerCommandResult {
+        runBlocking { params.routeSnapshot?.requireCurrent() }
         val ssh = NativeSshService(hostKeyPolicy = ::verifyHostKey)
-        ssh.use { service ->
-            service.connect(
-                host = params.host,
-                port = params.port,
-                username = params.username,
-                authMethod = params.authMethod,
-                password = if (params.authMethod == AuthMethod.Password) params.password else "",
-                publicKeyOpenSsh = params.publicKeyOpenSsh,
-                privateKeyPem = params.privateKeyPem,
-                keyPassphrase = params.keyPassphrase,
-            )
-            if (!service.openExec(withExitEnvelope(command))) {
-                return MultiplexerCommandResult(1, "", "Remote server did not open an exec channel")
+        auxiliarySsh = ssh
+        try {
+            ssh.use { service ->
+                if (disconnectRequested) throw CancellationException("Connection cancelled")
+                service.connect(
+                    isCancelled = { disconnectRequested },
+                    jumpHosts = params.jumpHosts,
+                    host = params.host,
+                    port = params.port,
+                    username = params.username,
+                    authMethod = params.authMethod,
+                    password =
+                        if (params.authMethod == AuthMethod.Password) params.password else "",
+                    publicKeyOpenSsh = params.publicKeyOpenSsh,
+                    privateKeyPem = params.privateKeyPem,
+                    keyPassphrase = params.keyPassphrase,
+                )
+                if (!service.openExec(withExitEnvelope(command))) {
+                    return MultiplexerCommandResult(
+                        1,
+                        "",
+                        "Remote server did not open an exec channel",
+                    )
+                }
+                return readExecOutput(service, timeoutMs)
             }
-            return readExecOutput(service, timeoutMs)
+        } finally {
+            auxiliarySsh = null
         }
     }
 
@@ -1064,12 +1184,13 @@ class TerminalSessionEngine(
     }
 
     private fun parseCommandEnvelope(output: String): MultiplexerCommandResult {
-        val marker = Regex("(?:^|\\n)ICHUCHU_EXIT:(\\d+)\\s*$").find(output)
-            ?: return MultiplexerCommandResult(
-                exitCode = 125,
-                stdout = output,
-                stderr = "Missing command exit marker",
-            )
+        val marker =
+            Regex("(?:^|\\n)ICHUCHU_EXIT:(\\d+)\\s*$").find(output)
+                ?: return MultiplexerCommandResult(
+                    exitCode = 125,
+                    stdout = output,
+                    stderr = "Missing command exit marker",
+                )
         val exitCode = marker.groupValues.getOrNull(1)?.toIntOrNull() ?: 125
         val cleanOutput = output.substring(0, marker.range.first).trimEnd()
         return MultiplexerCommandResult(exitCode = exitCode, stdout = cleanOutput, stderr = "")
@@ -1123,6 +1244,13 @@ class TerminalSessionEngine(
                         sendStartupCommand(params)
                         return@launch
                     } catch (e: Exception) {
+                        nativeSsh.close()
+                        if (disconnectRequested) return@launch
+                        if (e is SshConnectionException && !e.retryable) {
+                            _state.value =
+                                _state.value.copy(status = SessionStatus.Error, error = e.message)
+                            return@launch
+                        }
                         Log.e("TerminalSession", "Reconnect attempt $attempt failed", e)
                         if (attempt >= 8) {
                             _state.value =
@@ -1175,11 +1303,10 @@ class TerminalSessionEngine(
 
     private fun publishClipboard(text: String) {
         scope.launch(Dispatchers.Main.immediate) {
-            runCatching {
-                publishClipboardText(text)
-            }.onFailure { error ->
-                Log.w("TerminalSession", "OSC 52 clipboard update failed", error)
-            }
+            runCatching { publishClipboardText(text) }
+                .onFailure { error ->
+                    Log.w("TerminalSession", "OSC 52 clipboard update failed", error)
+                }
         }
     }
 
@@ -1229,12 +1356,13 @@ class TerminalSessionEngine(
     // px-per-cell as ws_xpixel/cols, so the canvas would misplace Kitty graphics.
     // Falls back to the canvas before the first real cell size.
     private fun ptyWidthPx(): Int = if (cellWidth > 0) cols * cellWidth else screenWidth
+
     private fun ptyHeightPx(): Int = if (cellHeight > 0) rows * cellHeight else screenHeight
 
     private fun resizeRemote(cols: Int, rows: Int, widthPx: Int, heightPx: Int) {
         when (lastConnectionParams?.transport) {
             Transport.Mosh -> {
-                Log.d("TerminalSession", "MOSH: resizeRemote ${cols}x${rows}")
+                Log.d("TerminalSession", "MOSH: resizeRemote ${cols}x$rows")
                 moshService.resize(cols, rows)
             }
             Transport.LocalShell -> localShellService.resize(cols, rows, widthPx, heightPx)
@@ -1320,5 +1448,4 @@ class TerminalSessionEngine(
             Log.e("TerminalSession", "emitSnapshot failed", e)
         }
     }
-
 }

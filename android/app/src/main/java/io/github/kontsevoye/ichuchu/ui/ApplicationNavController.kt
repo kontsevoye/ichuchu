@@ -69,6 +69,14 @@ private fun ProtectedNavigation(navController: NavHostController) {
             val localShellEnabled by settingsRepo.localShellEnabled.collectAsStateWithLifecycle()
             val hosts by vm.hosts.collectAsStateWithLifecycle()
             val searchQuery by vm.search.collectAsStateWithLifecycle()
+            val deleteError by vm.error.collectAsStateWithLifecycle()
+            androidx.compose.runtime.LaunchedEffect(deleteError) {
+                deleteError?.let {
+                    android.widget.Toast.makeText(context, it, android.widget.Toast.LENGTH_LONG)
+                        .show()
+                    vm.clearError()
+                }
+            }
             ServerListScreen(
                 hosts = hosts,
                 searchQuery = searchQuery,
@@ -92,24 +100,7 @@ private fun ProtectedNavigation(navController: NavHostController) {
                         }
                     },
                 onEditServer = { id -> navController.navigate("servers/edit/$id") },
-                onConnectServer = { id ->
-                    val host = hosts.firstOrNull { it.id == id }
-                    val hostRequiresAuth = host?.requireAuthOnConnect == true
-                    val mustVerify = requireAuthOnConnect || hostRequiresAuth
-                    if (!mustVerify) {
-                        navController.navigate("terminal/$id")
-                    } else {
-                        requireUserVerification(
-                            context = context,
-                            title = "Verify to connect",
-                            subtitle = "Authenticate to open this server session",
-                        ) { result ->
-                            if (result == VerificationResult.Success) {
-                                navController.navigate("terminal/$id")
-                            }
-                        }
-                    }
-                },
+                onConnectServer = { id -> navController.navigate("terminal/$id") },
                 onDeleteServer = vm::deleteServer,
                 onOpenSettings = { navController.navigate("settings") },
             )

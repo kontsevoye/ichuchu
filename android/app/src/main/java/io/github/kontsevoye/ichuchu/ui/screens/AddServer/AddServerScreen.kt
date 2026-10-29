@@ -22,6 +22,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -39,10 +40,13 @@ import io.github.kontsevoye.ichuchu.model.MultiplexerType
 import io.github.kontsevoye.ichuchu.model.Transport
 import io.github.kontsevoye.ichuchu.ui.components.IchuButton
 import io.github.kontsevoye.ichuchu.ui.components.IchuButtonVariant
+import io.github.kontsevoye.ichuchu.ui.components.IchuDialog
 import io.github.kontsevoye.ichuchu.ui.components.IchuSegmentedControl
 import io.github.kontsevoye.ichuchu.ui.components.IchuSwitch
 import io.github.kontsevoye.ichuchu.ui.components.IchuText
 import io.github.kontsevoye.ichuchu.ui.components.IchuTextField
+import io.github.kontsevoye.ichuchu.ui.security.VerificationResult
+import io.github.kontsevoye.ichuchu.ui.security.requireUserVerification
 import io.github.kontsevoye.ichuchu.ui.theme.IchuColors
 import io.github.kontsevoye.ichuchu.ui.theme.IchuTypography
 
@@ -51,9 +55,35 @@ fun AddServerScreen(vm: AddServerViewModel, onBack: () -> Unit, modifier: Modifi
     val form by vm.form.collectAsStateWithLifecycle()
     val testState by vm.testState.collectAsStateWithLifecycle()
     val keys by vm.keys.collectAsStateWithLifecycle()
+    val hosts by vm.hosts.collectAsStateWithLifecycle()
+    val keyPrompt by vm.hostKeyPrompt.collectAsStateWithLifecycle()
+    DisposableEffect(vm) { onDispose { vm.cancelTest() } }
     val colors = IchuColors.current
     val typography = IchuTypography.current
 
+    keyPrompt?.let { prompt ->
+        IchuDialog(
+            title =
+                if (prompt.previousFingerprint == null) {
+                    "Verify host key"
+                } else {
+                    "Replace changed host key?"
+                },
+            confirmLabel =
+                if (prompt.previousFingerprint == null) "Accept" else "Replace trusted key",
+            dismissLabel = "Reject",
+            onConfirm = { vm.respondToHostKey(true) },
+            onDismiss = { vm.respondToHostKey(false) },
+        ) {
+            IchuText(
+                "${prompt.routeLabel}\n${prompt.host}:${prompt.port}\n${prompt.algorithm}\n" +
+                    (prompt.previousFingerprint?.let { "WARNING: key changed!\nOld: $it\n" }
+                        ?: "") +
+                    "New: ${prompt.fingerprint}",
+                style = typography.body,
+            )
+        }
+    }
     val scrollState = rememberScrollState()
     val context = LocalContext.current
     var showAdditionalSettings by remember { mutableStateOf(false) }
@@ -163,6 +193,101 @@ fun AddServerScreen(vm: AddServerViewModel, onBack: () -> Unit, modifier: Modifi
             )
         }
 
+        SectionDivider()
+
+        SectionHeader("SSH JUMP HOSTS")
+        IchuText(
+            "This device → " +
+                (form.jumpHostIds.map { id ->
+                        hosts.firstOrNull { it.id == id }?.name ?: "Missing host"
+                    } +
+                    form.name.ifBlank { "target" })
+                    .joinToString(" → "),
+            style = typography.bodySmall,
+        )
+        if (form.transport != Transport.SSH) {
+            IchuText(
+                "Jump routes currently support SSH only. Mosh needs a direct UDP path.",
+                style = typography.bodySmall,
+                color = colors.textMuted,
+            )
+        }
+        form.jumpHostIds.forEachIndexed { index, id ->
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                IchuText(
+                    "${index + 1}. ${hosts.firstOrNull { it.id == id }?.name ?: "Missing host"}",
+                    modifier = Modifier.weight(1f),
+                )
+                IchuButton(
+                    onClick = { vm.moveJumpHost(index, -1) },
+                    enabled = index > 0,
+                    variant = IchuButtonVariant.Outlined,
+                    contentDescription = "Move jump host up",
+                ) {
+                    IchuText("↑")
+                }
+                IchuButton(
+                    onClick = { vm.moveJumpHost(index, 1) },
+                    enabled = index < form.jumpHostIds.lastIndex,
+                    variant = IchuButtonVariant.Outlined,
+                    contentDescription = "Move jump host down",
+                ) {
+                    IchuText("↓")
+                }
+                IchuButton(
+                    onClick = { vm.removeJumpHost(id) },
+                    variant = IchuButtonVariant.Outlined,
+                    contentDescription = "Remove jump host",
+                ) {
+                    IchuText("×")
+                }
+            }
+        }
+        var showJumpPicker by remember { mutableStateOf(false) }
+        IchuButton(
+            onClick = { showJumpPicker = !showJumpPicker },
+            enabled = form.transport == Transport.SSH && form.jumpHostIds.size < 3,
+            variant = IchuButtonVariant.Outlined,
+        ) {
+            IchuText("add jump host")
+        }
+        if (showJumpPicker) {
+            IchuText(
+                "Uses each profile's SSH endpoint and credentials; its own route is not included.",
+                style = typography.bodySmall,
+                color = colors.textMuted,
+            )
+            hosts
+                .filter {
+                    it.transport == Transport.SSH && it.id != form.id && it.id !in form.jumpHostIds
+                }
+                .forEach { host ->
+                    IchuButton(
+                        onClick = {
+                            vm.addJumpHost(host.id)
+                            showJumpPicker = false
+                        },
+                        variant = IchuButtonVariant.Outlined,
+                    ) {
+                        IchuText("${host.name} · ${host.username}@${host.host}:${host.port}")
+                    }
+                }
+            if (
+                hosts.none {
+                    it.transport == Transport.SSH && it.id != form.id && it.id !in form.jumpHostIds
+                }
+            ) {
+                IchuText("Save another SSH server first.", style = typography.bodySmall)
+            }
+        }
+        val dependents = hosts.filter { form.id in it.jumpHostIds }
+        if (dependents.isNotEmpty()) {
+            IchuText(
+                "Used as a jump host by: ${dependents.joinToString { it.name }}",
+                style = typography.bodySmall,
+                color = colors.warning,
+            )
+        }
         SectionDivider()
 
         SectionHeader("AUTHENTICATION")
@@ -297,8 +422,20 @@ fun AddServerScreen(vm: AddServerViewModel, onBack: () -> Unit, modifier: Modifi
 
         val canTest = form.host.isNotBlank() && form.username.isNotBlank()
         IchuButton(
-            onClick = vm::testConnection,
-            enabled = canTest,
+            onClick = {
+                if (vm.requiresTestVerification) {
+                    requireUserVerification(
+                        context,
+                        "Verify to test connection",
+                        "Authenticate to use this route",
+                    ) {
+                        if (it == VerificationResult.Success) vm.testConnection(verified = true)
+                    }
+                } else {
+                    vm.testConnection()
+                }
+            },
+            enabled = canTest && testState.status != ConnectionTestStatus.Running,
             variant = IchuButtonVariant.Outlined,
             bracketed = true,
             modifier = Modifier.fillMaxWidth(),
@@ -311,6 +448,12 @@ fun AddServerScreen(vm: AddServerViewModel, onBack: () -> Unit, modifier: Modifi
                     ConnectionTestStatus.Error -> "test failed"
                 }
             IchuText(label, style = typography.label)
+        }
+        if (testState.status == ConnectionTestStatus.Running) {
+            IchuText(testState.message ?: "Connecting…", style = typography.bodySmall)
+            IchuButton(onClick = vm::cancelTest, variant = IchuButtonVariant.Outlined) {
+                IchuText("cancel test")
+            }
         }
         if (testState.status == ConnectionTestStatus.Error && testState.message != null) {
             IchuText(testState.message ?: "", style = typography.bodySmall, color = colors.error)

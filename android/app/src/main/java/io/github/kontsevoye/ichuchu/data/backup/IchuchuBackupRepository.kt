@@ -2,13 +2,11 @@ package io.github.kontsevoye.ichuchu.data.backup
 
 import androidx.room.withTransaction
 import io.github.kontsevoye.ichuchu.data.db.AppDatabase
-import io.github.kontsevoye.ichuchu.service.backup.IchuchuBackupCodec
 import io.github.kontsevoye.ichuchu.model.HostProfile
 import io.github.kontsevoye.ichuchu.model.SshKey
+import io.github.kontsevoye.ichuchu.service.backup.IchuchuBackupCodec
 
-class IchuchuBackupRepository(
-    private val db: AppDatabase,
-) {
+class IchuchuBackupRepository(private val db: AppDatabase) {
     suspend fun createEncryptedBackup(passphrase: CharArray): ByteArray {
         val payload = db.withTransaction {
             BackupPayload(
@@ -19,21 +17,16 @@ class IchuchuBackupRepository(
         return IchuchuBackupCodec.encrypt(payload, passphrase)
     }
 
-    fun readEncryptedBackup(
-        bytes: ByteArray,
-        passphrase: CharArray,
-    ): BackupPayload = IchuchuBackupCodec.decrypt(bytes, passphrase)
+    fun readEncryptedBackup(bytes: ByteArray, passphrase: CharArray): BackupPayload =
+        IchuchuBackupCodec.decrypt(bytes, passphrase)
 
-    suspend fun planImport(payload: BackupPayload): BackupImportPlan {
-        return IchuchuBackupImportPlanner.planImport(
+    suspend fun planImport(payload: BackupPayload): BackupImportPlan = IchuchuBackupImportPlanner.planImport(
             payload = payload,
             existingKeys = db.sshKeyDao().getAll(),
             existingHosts = db.hostProfileDao().getAll(),
         )
-    }
 
-    suspend fun importPayload(payload: BackupPayload): BackupImportResult {
-        return db.withTransaction {
+    suspend fun importPayload(payload: BackupPayload): BackupImportResult = db.withTransaction {
             val plan = IchuchuBackupImportPlanner.planImport(
                 payload = payload,
                 existingKeys = db.sshKeyDao().getAll(),
@@ -41,12 +34,8 @@ class IchuchuBackupRepository(
             )
             applyImportPlan(plan)
         }
-    }
 
-    suspend fun importEncryptedBackup(
-        bytes: ByteArray,
-        passphrase: CharArray,
-    ): BackupImportResult {
+    suspend fun importEncryptedBackup(bytes: ByteArray, passphrase: CharArray): BackupImportResult {
         val payload = readEncryptedBackup(bytes, passphrase)
         return importPayload(payload)
     }
@@ -61,14 +50,26 @@ class IchuchuBackupRepository(
             }
         }
 
+        val insertedHostIds = mutableMapOf<Long, Long>()
         var importedHosts = 0
         plan.hostActions.forEach { action ->
             check(action.host.id == 0L) { "Imported hosts must not preserve exported ids" }
-            val localKeyId = action.keyActionIndex?.let { insertedKeyIdsByActionIndex[it] }
-                ?: action.host.keyId
-            val host = action.host.copy(keyId = localKeyId)
-            db.hostProfileDao().insertForImport(host)
+            val localKeyId =
+                action.keyActionIndex?.let { insertedKeyIdsByActionIndex[it] } ?: action.host.keyId
+            val host = action.host.copy(keyId = localKeyId, jumpHostIds = emptyList())
+            insertedHostIds[action.exportedId] = db.hostProfileDao().insertForImport(host)
             importedHosts += 1
+        }
+
+        plan.hostActions.forEach { action ->
+            val localId = insertedHostIds.getValue(action.exportedId)
+            val host = db.hostProfileDao().getById(localId) ?: error("Imported host missing")
+            db.hostProfileDao()
+                .update(
+                    host.copy(
+                        jumpHostIds = action.host.jumpHostIds.map { insertedHostIds.getValue(it) }
+                    )
+                )
         }
 
         return BackupImportResult(
@@ -89,10 +90,8 @@ data class BackupImportResult(
     val renamedHosts: Int,
 )
 
-fun buildBackupPayload(
-    keys: List<SshKey>,
-    hosts: List<HostProfile>,
-): BackupPayload = BackupPayload(
-    keys = keys.map(BackupSshKey::fromEntity),
-    hosts = hosts.map(BackupHostProfile::fromEntity),
-)
+fun buildBackupPayload(keys: List<SshKey>, hosts: List<HostProfile>): BackupPayload =
+    BackupPayload(
+        keys = keys.map(BackupSshKey::fromEntity),
+        hosts = hosts.map(BackupHostProfile::fromEntity),
+    )

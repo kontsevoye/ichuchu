@@ -4,8 +4,13 @@ import io.github.kontsevoye.ichuchu.model.AuthMethod
 import io.github.kontsevoye.ichuchu.model.HostProfile
 import io.github.kontsevoye.ichuchu.model.MultiplexerType
 import io.github.kontsevoye.ichuchu.model.Transport
+import io.github.kontsevoye.ichuchu.service.ssh.SshJumpHost
+import io.github.kontsevoye.ichuchu.service.ssh.SshRouteSnapshot
 
 data class TabSpec(
+    val requiresRouteVerification: Boolean = false,
+    val routeSnapshot: SshRouteSnapshot? = null,
+    val jumpHosts: List<SshJumpHost> = emptyList(),
     val hostId: Long? = null,
     val displayName: String = "",
     val host: String = "",
@@ -56,25 +61,27 @@ data class TabSpec(
             host: HostProfile,
             publicKeyOpenSsh: String = "",
             privateKeyPem: String = "",
-            keyPassphrase: String = "",
-        ): TabSpec = TabSpec(
-            hostId = host.id,
-            displayName = host.name,
-            host = host.host,
-            port = host.port,
-            username = host.username,
-            password = host.password,
-            authMethod = host.authMethod,
-            publicKeyOpenSsh = publicKeyOpenSsh,
-            privateKeyPem = privateKeyPem,
-            keyPassphrase = keyPassphrase,
-            transport = host.transport,
-            postConnectCommand = host.postConnectCommand,
-            multiplexer = host.multiplexer?.takeIf {
-                it.runtimeSupported &&
-                    host.transport != Transport.Mosh &&
-                    host.transport != Transport.LocalShell
-            },
-        )
+            keyPassphrase: String = host.keyPassphrase,
+        ): TabSpec =
+            TabSpec(
+                hostId = host.id,
+                displayName = host.name,
+                host = host.host,
+                port = host.port,
+                username = host.username,
+                password = host.password,
+                authMethod = host.authMethod,
+                publicKeyOpenSsh = publicKeyOpenSsh,
+                privateKeyPem = privateKeyPem,
+                keyPassphrase = keyPassphrase,
+                transport = host.transport,
+                postConnectCommand = host.postConnectCommand,
+                multiplexer =
+                    host.multiplexer?.takeIf {
+                        it.runtimeSupported &&
+                            host.transport != Transport.Mosh &&
+                            host.transport != Transport.LocalShell
+                    },
+            )
     }
 }

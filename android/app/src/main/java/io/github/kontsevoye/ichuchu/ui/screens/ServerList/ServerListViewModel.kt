@@ -15,29 +15,32 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
-class ServerListViewModel(
-    application: Application,
-) : AndroidViewModel(application) {
+class ServerListViewModel(application: Application) : AndroidViewModel(application) {
     private val db = AppDatabase.getInstance(application)
     private val hostRepository = HostRepository(db.hostProfileDao())
 
+    private val _error = MutableStateFlow<String?>(null)
+    val error: StateFlow<String?> = _error
+
+    fun clearError() {
+        _error.value = null
+    }
+
     private val searchQuery = MutableStateFlow("")
 
-    val hosts: StateFlow<List<HostProfile>> = hostRepository.observeAll()
-        .combine(searchQuery) { hosts, query ->
-            val trimmed = query.trim()
-            if (trimmed.isEmpty()) return@combine hosts
-            hosts.filter { host ->
-                host.name.contains(trimmed, ignoreCase = true) ||
-                    host.host.contains(trimmed, ignoreCase = true) ||
-                    host.username.contains(trimmed, ignoreCase = true)
+    val hosts: StateFlow<List<HostProfile>> =
+        hostRepository
+            .observeAll()
+            .combine(searchQuery) { hosts, query ->
+                val trimmed = query.trim()
+                if (trimmed.isEmpty()) return@combine hosts
+                hosts.filter { host ->
+                    host.name.contains(trimmed, ignoreCase = true) ||
+                        host.host.contains(trimmed, ignoreCase = true) ||
+                        host.username.contains(trimmed, ignoreCase = true)
+                }
             }
-        }
-        .stateIn(
-            viewModelScope,
-            SharingStarted.WhileSubscribed(5_000),
-            emptyList(),
-        )
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     fun updateSearchQuery(value: String) {
         searchQuery.value = value
@@ -46,15 +49,16 @@ class ServerListViewModel(
     fun deleteServer(id: Long) {
         viewModelScope.launch {
             val host = hostRepository.getById(id) ?: return@launch
-            hostRepository.delete(host)
+            try {
+                hostRepository.delete(host)
+            } catch (e: Exception) {
+                _error.value = e.message
+            }
         }
     }
 
-    val search: StateFlow<String> = searchQuery.stateIn(
-        viewModelScope,
-        SharingStarted.WhileSubscribed(5_000),
-        "",
-    )
+    val search: StateFlow<String> =
+        searchQuery.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), "")
 
     companion object {
         fun factory(application: Application): ViewModelProvider.Factory =

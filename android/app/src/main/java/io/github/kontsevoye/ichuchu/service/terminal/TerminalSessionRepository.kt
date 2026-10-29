@@ -192,23 +192,26 @@ class TerminalSessionRepository private constructor(application: Application) {
 
     private suspend fun <T> withPreflightEngine(block: suspend (TerminalSessionEngine) -> T): T =
         preflightMutex.withLock {
-            val engine = synchronized(this) {
-                check(!updateInstallationPending) { "Installation in progress" }
-                TerminalSessionEngine(
-                    {},
-                    scope,
-                    newLocalShellService(),
-                    hostKeyStore,
-                    tailscaleStatusChecker,
-                ).also { preflightEngine = it }
-            }
-            val promptJob = scope.launch {
-                engine.hostKeyPrompt.collect { prompt ->
-                    if (preflightEngine === engine) {
-                        _preflightHostKeyPrompt.value = prompt
+            val engine =
+                synchronized(this) {
+                    check(!updateInstallationPending) { "Installation in progress" }
+                    TerminalSessionEngine(
+                            {},
+                            scope,
+                            newLocalShellService(),
+                            hostKeyStore,
+                            tailscaleStatusChecker,
+                        )
+                        .also { preflightEngine = it }
+                }
+            val promptJob =
+                scope.launch {
+                    engine.hostKeyPrompt.collect { prompt ->
+                        if (preflightEngine === engine) {
+                            _preflightHostKeyPrompt.value = prompt
+                        }
                     }
                 }
-            }
             preflightPromptJob = promptJob
             return@withLock try {
                 block(engine)
@@ -265,6 +268,8 @@ class TerminalSessionRepository private constructor(application: Application) {
         _tabs.value = _tabs.value + tab
         _activeTabId.value = id
         engine.connect(
+            routeSnapshot = spec.routeSnapshot,
+            jumpHosts = spec.jumpHosts,
             host = spec.host,
             port = spec.port,
             username = spec.username,
@@ -324,6 +329,8 @@ class TerminalSessionRepository private constructor(application: Application) {
         if (updateInstallationPending) return
         val spec = tab.spec
         tab.engine.connect(
+            routeSnapshot = spec.routeSnapshot,
+            jumpHosts = spec.jumpHosts,
             host = spec.host,
             port = spec.port,
             username = spec.username,
@@ -477,14 +484,12 @@ class TerminalSessionRepository private constructor(application: Application) {
     companion object {
         @Volatile private var instance: TerminalSessionRepository? = null
 
-        fun getInstance(application: Application): TerminalSessionRepository {
-            return instance
+        fun getInstance(application: Application): TerminalSessionRepository = instance
                 ?: synchronized(this) {
                     instance
                         ?: TerminalSessionRepository(application).also { created ->
                             instance = created
                         }
                 }
-        }
     }
 }

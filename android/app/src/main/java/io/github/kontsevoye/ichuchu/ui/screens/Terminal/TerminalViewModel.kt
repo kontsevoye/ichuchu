@@ -13,6 +13,8 @@ import io.github.kontsevoye.ichuchu.model.HostProfile
 import io.github.kontsevoye.ichuchu.model.Transport
 import io.github.kontsevoye.ichuchu.service.multiplexer.MultiplexerRegistry
 import io.github.kontsevoye.ichuchu.service.multiplexer.RemoteMultiplexerSession
+import io.github.kontsevoye.ichuchu.service.ssh.SshJumpHost
+import io.github.kontsevoye.ichuchu.service.ssh.SshRouteSnapshot
 import io.github.kontsevoye.ichuchu.service.ssh.TailscaleStatusChecker
 import io.github.kontsevoye.ichuchu.service.terminal.HostKeyPrompt
 import io.github.kontsevoye.ichuchu.service.terminal.SessionState
@@ -100,8 +102,11 @@ class TerminalViewModel(application: Application) : AndroidViewModel(application
             tabs.collect { openTabs ->
                 val liveIds = openTabs.map { it.id }.toSet()
                 // EOF can close a tab in the repository without going through closeTab().
-                val trackedIds = _connectionTabByTab.value.keys + _fileBrowserStateByTab.value.keys +
-                    fileHomeByTab.keys + fileBrowserRefreshJobs.keys + fileBrowserResolverJobs.keys
+                val trackedIds = _connectionTabByTab.value.keys +
+                    _fileBrowserStateByTab.value.keys +
+                    fileHomeByTab.keys +
+                    fileBrowserRefreshJobs.keys +
+                    fileBrowserResolverJobs.keys
                 trackedIds.filterNot { it in liveIds }.forEach(::clearTabState)
             }
         }
@@ -145,30 +150,87 @@ class TerminalViewModel(application: Application) : AndroidViewModel(application
         return sessionRepository.tryOpenTab(spec)
     }
 
-    data class PreparedTabOpen(
-        val spec: TabSpec,
-        val requiresVerification: Boolean,
-    )
+    data class PreparedTabOpen(val spec: TabSpec, val requiresVerification: Boolean)
 
     suspend fun prepareTabOpenForHost(hostId: Long): PreparedTabOpen? {
         val host = hostRepository.getById(hostId) ?: return null
-        return prepareTabOpen(host)
+        return try {
+            prepareTabOpen(host)
+        } catch (e: Exception) {
+            _multiplexerState.value =
+                _multiplexerState.value.copy(preflightError = e.message ?: "Invalid SSH route")
+            null
+        }
     }
 
     suspend fun prepareTabOpen(host: HostProfile): PreparedTabOpen {
+        val routeKeys = database.sshKeyDao().getAll()
+        val jumpHosts = SshJumpHost.resolve(host, database.hostProfileDao().getAll(), routeKeys)
         val key = host.keyId?.let { sshKeyRepository.getById(it) }
-        val spec = TabSpec.fromHostProfile(
-            host = host,
-            publicKeyOpenSsh = key?.publicKeyOpenSsh.orEmpty(),
-            privateKeyPem = key?.privateKeyPem.orEmpty(),
-        )
+        val spec =
+            TabSpec.fromHostProfile(
+                host = host,
+                publicKeyOpenSsh = key?.publicKeyOpenSsh.orEmpty(),
+                privateKeyPem = key?.privateKeyPem.orEmpty(),
+            )
         val requiresVerification =
-            settingsRepository.requireAuthOnConnect.value || host.requireAuthOnConnect
-        return PreparedTabOpen(spec = spec, requiresVerification = requiresVerification)
+            settingsRepository.requireAuthOnConnect.value ||
+                host.requireAuthOnConnect ||
+                jumpHosts.any { it.profile.requireAuthOnConnect }
+        return PreparedTabOpen(
+            spec =
+                spec.copy(
+                    requiresRouteVerification = requiresVerification,
+                    jumpHosts = jumpHosts,
+                    routeSnapshot =
+                        if (jumpHosts.isEmpty()) {
+                            null
+                        } else {
+                            SshRouteSnapshot(
+                                database,
+                                host,
+                                jumpHosts,
+                                routeKeys.filter { key ->
+                                    key.id == host.keyId ||
+                                        jumpHosts.any { it.profile.keyId == key.id }
+                                },
+                            )
+                        },
+                ),
+            requiresVerification = requiresVerification,
+        )
     }
 
-    fun duplicateActiveTab(): TabSession? {
+    private var nextRouteVerification = 0L
+    private var pendingRouteAction: (() -> Unit)? = null
+    private val _routeVerification = MutableStateFlow(0L)
+    val routeVerification: StateFlow<Long> = _routeVerification
+
+    private fun verifyRouteAction(spec: TabSpec, action: () -> Unit): Boolean {
+        if (
+            spec.jumpHosts.isEmpty() ||
+                !(spec.requiresRouteVerification || settingsRepository.requireAuthOnConnect.value)
+        ) {
+            return false
+        }
+        pendingRouteAction = action
+        _routeVerification.value = ++nextRouteVerification
+        return true
+    }
+
+    fun completeRouteVerification(generation: Long, accepted: Boolean) {
+        if (generation != _routeVerification.value) return
+        _routeVerification.value = 0L
+        val action = pendingRouteAction
+        pendingRouteAction = null
+        if (accepted) action?.invoke()
+    }
+
+    fun duplicateActiveTab(verified: Boolean = false): TabSession? {
         val current = sessionRepository.activeTab.value ?: return null
+        if (!verified && verifyRouteAction(current.spec) { duplicateTab(current.id, true) }) {
+            return null
+        }
         if (current.spec.usesRuntimeMultiplexer) {
             startMultiplexerDuplicate(current.spec)
             return null
@@ -176,8 +238,9 @@ class TerminalViewModel(application: Application) : AndroidViewModel(application
         return openTab(current.spec)
     }
 
-    fun duplicateTab(tabId: String): TabSession? {
+    fun duplicateTab(tabId: String, verified: Boolean = false): TabSession? {
         val tab = sessionRepository.tabs.value.firstOrNull { it.id == tabId } ?: return null
+        if (!verified && verifyRouteAction(tab.spec) { duplicateTab(tabId, true) }) return null
         if (tab.spec.usesRuntimeMultiplexer) {
             startMultiplexerDuplicate(tab.spec)
             return null
@@ -199,9 +262,11 @@ class TerminalViewModel(application: Application) : AndroidViewModel(application
                         openTab(duplicateSpec.copy(multiplexerSessionName = name))
                     },
                     onFailure = { error ->
-                        _multiplexerState.value = _multiplexerState.value.copy(
-                            preflightError = error.message ?: "Could not create multiplexer session",
-                        )
+                        _multiplexerState.value =
+                            _multiplexerState.value.copy(
+                                preflightError =
+                                    error.message ?: "Could not create multiplexer session"
+                            )
                     },
                 )
             }
@@ -218,14 +283,25 @@ class TerminalViewModel(application: Application) : AndroidViewModel(application
 
     private fun beginMultiplexerAction(action: PendingMultiplexerAction) {
         val actionGeneration = ++multiplexerActionGeneration
-        val preparedAction = when (action) {
-            is PendingMultiplexerAction.Open -> action.copy(
-                spec = action.spec.copy(multiplexer = action.spec.multiplexer ?: MultiplexerRegistry.defaultType),
-            )
-            is PendingMultiplexerAction.Reconnect -> action.copy(
-                spec = action.spec.copy(multiplexer = action.spec.multiplexer ?: MultiplexerRegistry.defaultType),
-            )
-        }
+        val preparedAction =
+            when (action) {
+                is PendingMultiplexerAction.Open ->
+                    action.copy(
+                        spec =
+                            action.spec.copy(
+                                multiplexer =
+                                    action.spec.multiplexer ?: MultiplexerRegistry.defaultType
+                            )
+                    )
+                is PendingMultiplexerAction.Reconnect ->
+                    action.copy(
+                        spec =
+                            action.spec.copy(
+                                multiplexer =
+                                    action.spec.multiplexer ?: MultiplexerRegistry.defaultType
+                            )
+                    )
+            }
         pendingMultiplexerAction = preparedAction
         val spec = preparedAction.spec
         val label = spec.multiplexer?.label ?: MultiplexerRegistry.defaultType.label
@@ -261,16 +337,21 @@ class TerminalViewModel(application: Application) : AndroidViewModel(application
                         completeMultiplexerAction(actionGeneration, preparedAction, sessionName)
                     },
                     onFailure = { error ->
-                        _multiplexerState.value = _multiplexerState.value.copy(
-                            preflightError = error.message ?: "Could not prepare multiplexer session",
-                        )
+                        _multiplexerState.value =
+                            _multiplexerState.value.copy(
+                                preflightError =
+                                    error.message ?: "Could not prepare multiplexer session"
+                            )
                     },
                 )
             }
         }
     }
 
-    private fun isCurrentMultiplexerAction(actionGeneration: Long, action: PendingMultiplexerAction): Boolean =
+    private fun isCurrentMultiplexerAction(
+        actionGeneration: Long,
+        action: PendingMultiplexerAction,
+    ): Boolean =
         multiplexerActionGeneration == actionGeneration && pendingMultiplexerAction == action
 
     private fun completeMultiplexerAction(
@@ -367,9 +448,11 @@ class TerminalViewModel(application: Application) : AndroidViewModel(application
                         listMultiplexerSessionsForCurrentHost()
                     },
                     onFailure = { error ->
-                        _multiplexerState.value = _multiplexerState.value.copy(
-                            sessionsError = error.message ?: "Could not create multiplexer session",
-                        )
+                        _multiplexerState.value =
+                            _multiplexerState.value.copy(
+                                sessionsError =
+                                    error.message ?: "Could not create multiplexer session"
+                            )
                     },
                 )
             }
@@ -445,8 +528,20 @@ class TerminalViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun reconnect() {
+        reconnectVerified(false)
+    }
+
+    private fun reconnectVerified(verified: Boolean) {
         refreshTailscaleStatus()
         val tab = sessionRepository.activeTab.value ?: return
+        if (
+            !verified &&
+                verifyRouteAction(tab.spec) {
+                    if (sessionRepository.activeTab.value?.id == tab.id) reconnectVerified(true)
+                }
+        ) {
+            return
+        }
         if (tab.spec.usesRuntimeMultiplexer) {
             initiateMultiplexerReconnect(tab)
         } else {
@@ -569,8 +664,11 @@ class TerminalViewModel(application: Application) : AndroidViewModel(application
                             FileBrowserEntry(
                                 name = name,
                                 path =
-                                    if (normalizedBase == "/") "/$name"
-                                    else "$normalizedBase/$name",
+                                    if (normalizedBase == "/") {
+                                        "/$name"
+                                    } else {
+                                        "$normalizedBase/$name"
+                                    },
                                 type = type,
                                 sizeBytes = if (size == null || size <= 0L) null else size,
                                 modifiedAtText = mtime?.takeIf { it > 0L }?.let { formatMtime(it) },
@@ -654,9 +752,7 @@ class TerminalViewModel(application: Application) : AndroidViewModel(application
         withContext(Dispatchers.Main) { refreshFileBrowser() }
     }
 
-    suspend fun readFile(tabId: String, entry: FileBrowserEntry, maxBytes: Int): ByteArray {
-        return sessionRepository.sftpReadFile(tabId, entry.path, maxBytes)
-    }
+    suspend fun readFile(tabId: String, entry: FileBrowserEntry, maxBytes: Int): ByteArray = sessionRepository.sftpReadFile(tabId, entry.path, maxBytes)
 
     private fun formatMtime(epochSeconds: Long): String {
         val formatter = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US)
@@ -683,8 +779,20 @@ class TerminalViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun onPrimaryMouseClick(x: Float, y: Float) {
-        sendPrimaryMouseEvent(TerminalMouseAction.Press, x, y, anyButtonPressed = false, trackLastCell = false)
-        sendPrimaryMouseEvent(TerminalMouseAction.Release, x, y, anyButtonPressed = false, trackLastCell = false)
+        sendPrimaryMouseEvent(
+            TerminalMouseAction.Press,
+            x,
+            y,
+            anyButtonPressed = false,
+            trackLastCell = false,
+        )
+        sendPrimaryMouseEvent(
+            TerminalMouseAction.Release,
+            x,
+            y,
+            anyButtonPressed = false,
+            trackLastCell = false,
+        )
     }
 
     fun onAppSelectionDrag(action: Int, x: Float, y: Float) {
@@ -724,8 +832,11 @@ class TerminalViewModel(application: Application) : AndroidViewModel(application
         val effectiveCodepoint = if (charCode > 0) charCode else codepoint
 
         val utf8 =
-            if (effectiveCodepoint > 0 && !hasNonTextModifier && !isRelease) effectiveCodepoint.toChar().toString()
-            else null
+            if (effectiveCodepoint > 0 && !hasNonTextModifier && !isRelease) {
+                effectiveCodepoint.toChar().toString()
+            } else {
+                null
+            }
         sessionRepository.writeKey(key, effectiveCodepoint, mods, action, utf8)
     }
 

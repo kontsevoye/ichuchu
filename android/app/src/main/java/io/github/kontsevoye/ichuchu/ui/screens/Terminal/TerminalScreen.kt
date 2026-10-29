@@ -3,7 +3,6 @@ package io.github.kontsevoye.ichuchu.ui.screens.Terminal
 import android.app.Activity
 import android.content.ClipData
 import android.content.ClipboardManager
-import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.provider.OpenableColumns
@@ -23,18 +22,18 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
-import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
@@ -55,7 +54,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.blur
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
@@ -68,15 +66,14 @@ import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.PasswordVisualTransformation
-import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupProperties
 import androidx.core.content.FileProvider
-import io.github.kontsevoye.ichuchu.ui.screens.Files.stageRemoteFile
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -95,13 +92,15 @@ import io.github.kontsevoye.ichuchu.ui.screens.Files.ConnectionTab
 import io.github.kontsevoye.ichuchu.ui.screens.Files.FileBrowserScreen
 import io.github.kontsevoye.ichuchu.ui.screens.Files.UploadProgress
 import io.github.kontsevoye.ichuchu.ui.screens.Files.formatFileSize
-import io.github.kontsevoye.ichuchu.ui.screens.Terminal.TerminalTabMode
+import io.github.kontsevoye.ichuchu.ui.screens.Files.stageRemoteFile
+import io.github.kontsevoye.ichuchu.ui.security.VerificationResult
+import io.github.kontsevoye.ichuchu.ui.security.requireUserVerification
 import io.github.kontsevoye.ichuchu.ui.terminal.AccessoryAction
 import io.github.kontsevoye.ichuchu.ui.terminal.BuiltinCommand
-import io.github.kontsevoye.ichuchu.ui.terminal.IchuchuKeyBindings
 import io.github.kontsevoye.ichuchu.ui.terminal.CustomActionModifier
 import io.github.kontsevoye.ichuchu.ui.terminal.GhosttyKey
 import io.github.kontsevoye.ichuchu.ui.terminal.GhosttyKeyAction
+import io.github.kontsevoye.ichuchu.ui.terminal.IchuchuKeyBindings
 import io.github.kontsevoye.ichuchu.ui.terminal.KeyboardAccessoryBar
 import io.github.kontsevoye.ichuchu.ui.terminal.ModifierState
 import io.github.kontsevoye.ichuchu.ui.terminal.TerminalAccessoryDispatcher
@@ -117,15 +116,12 @@ import io.github.kontsevoye.ichuchu.ui.terminal.TerminalSpecialKey
 import io.github.kontsevoye.ichuchu.ui.terminal.decodeCustomActionValue
 import io.github.kontsevoye.ichuchu.ui.terminal.modifierStateForCustomAction
 import io.github.kontsevoye.ichuchu.ui.terminal.toGhosttyKey
+import io.github.kontsevoye.ichuchu.ui.theme.GhosttyThemeRegistry
 import io.github.kontsevoye.ichuchu.ui.theme.IchuColors
 import io.github.kontsevoye.ichuchu.ui.theme.IchuTypography
-import io.github.kontsevoye.ichuchu.ui.theme.GhosttyThemeRegistry
 import io.github.kontsevoye.ichuchu.ui.theme.resolveActiveThemeName
 import io.github.kontsevoye.ichuchu.ui.theme.toRgbIntArray
 import io.github.kontsevoye.ichuchu.ui.theme.toTerminalPaletteBytes
-import io.github.kontsevoye.ichuchu.ui.security.requireUserVerification
-import io.github.kontsevoye.ichuchu.ui.security.VerificationResult
-import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.launch
@@ -201,12 +197,7 @@ private fun NewTabHostPicker(
             }
 
             if (otherHosts.isNotEmpty()) {
-                Box(
-                    modifier =
-                        Modifier.fillMaxWidth()
-                            .height(1.dp)
-                            .background(colors.border),
-                )
+                Box(modifier = Modifier.fillMaxWidth().height(1.dp).background(colors.border))
                 LazyColumn(
                     modifier = Modifier.fillMaxWidth().weight(1f, fill = false),
                     verticalArrangement = Arrangement.spacedBy(2.dp),
@@ -459,7 +450,7 @@ fun TerminalScreen(
             settingsFontSize.coerceIn(
                 SettingsRepository.MIN_TERMINAL_FONT_SIZE,
                 SettingsRepository.MAX_TERMINAL_FONT_SIZE,
-            ),
+            )
         )
     }
     LaunchedEffect(settingsFontSize) {
@@ -469,11 +460,34 @@ fun TerminalScreen(
                 SettingsRepository.MAX_TERMINAL_FONT_SIZE,
             )
     }
+    val routeVerification by vm.routeVerification.collectAsStateWithLifecycle()
+    LaunchedEffect(routeVerification) {
+        val requestGeneration = routeVerification
+        if (requestGeneration > 0) {
+            requireUserVerification(
+                context,
+                "Verify SSH route",
+                "Authenticate to use this route",
+            ) { result ->
+                vm.completeRouteVerification(
+                    requestGeneration,
+                    result == VerificationResult.Success &&
+                        lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED),
+                )
+            }
+        }
+    }
     val showCustomActionsFab by settingsRepo.showCustomActionsFab.collectAsStateWithLifecycle()
     val builtinShortcuts by settingsRepo.builtinShortcuts.collectAsStateWithLifecycle()
     var fabFilteredActions by remember { mutableStateOf<List<TerminalCustomAction>?>(null) }
     val ichuchuKeys =
-        remember(vm, tabMode, currentTerminalCustomKeyGroups, builtinShortcuts, showCustomActionsFab) {
+        remember(
+            vm,
+            tabMode,
+            currentTerminalCustomKeyGroups,
+            builtinShortcuts,
+            showCustomActionsFab,
+        ) {
             val isStrip = tabMode == TerminalTabMode.Strip
             val builtinCommandHandlers: Map<BuiltinCommand, () -> Unit> = mapOf(
                 BuiltinCommand.Tabs to {
@@ -537,7 +551,6 @@ fun TerminalScreen(
         )
     }
 
-
     val hasTabsForHost =
         remember(tabs, hostId, openLocalShell) {
             when {
@@ -566,39 +579,40 @@ fun TerminalScreen(
         ?: activeTab?.spec?.host?.takeIf { it.isNotBlank() }
     val pickerScope = rememberCoroutineScope()
 
-    val openPreparedTab: (TabSpec, Boolean, Boolean) -> Unit = { spec, requiresVerification, fromPicker ->
-        val openOrPrompt: (TabSpec) -> Unit = { preparedSpec ->
-            if (
-                preparedSpec.authMethod == AuthMethod.KeyWithPassphrase &&
-                    preparedSpec.keyPassphrase.isBlank()
-            ) {
-                passphraseFromPicker = fromPicker
-                pendingTabSpec = preparedSpec
-                showPassphrasePrompt = true
-            } else if (preparedSpec.usesRuntimeMultiplexer) {
-                vm.initiateMultiplexerOpen(preparedSpec)
-            } else {
-                vm.openTab(preparedSpec)
-            }
-        }
-
-        if (requiresVerification) {
-            requireUserVerification(
-                context = context,
-                title = "Verify to connect",
-                subtitle = "Authenticate to open this server session",
-            ) { result ->
+    val openPreparedTab: (TabSpec, Boolean, Boolean) -> Unit =
+        { spec, requiresVerification, fromPicker ->
+            val openOrPrompt: (TabSpec) -> Unit = { preparedSpec ->
                 if (
-                    result == VerificationResult.Success &&
-                        lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)
+                    preparedSpec.authMethod == AuthMethod.KeyWithPassphrase &&
+                        preparedSpec.keyPassphrase.isBlank()
                 ) {
-                    openOrPrompt(spec)
+                    passphraseFromPicker = fromPicker
+                    pendingTabSpec = preparedSpec
+                    showPassphrasePrompt = true
+                } else if (preparedSpec.usesRuntimeMultiplexer) {
+                    vm.initiateMultiplexerOpen(preparedSpec)
+                } else {
+                    vm.openTab(preparedSpec)
                 }
             }
-        } else {
-            openOrPrompt(spec)
+
+            if (requiresVerification) {
+                requireUserVerification(
+                    context = context,
+                    title = "Verify to connect",
+                    subtitle = "Authenticate to open this server session",
+                ) { result ->
+                    if (
+                        result == VerificationResult.Success &&
+                            lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)
+                    ) {
+                        openOrPrompt(spec)
+                    }
+                }
+            } else {
+                openOrPrompt(spec)
+            }
         }
-    }
 
     val openAnotherSessionForCurrentHost: () -> Unit = {
         val currentHostId = activeTab?.spec?.hostId ?: hostId
@@ -616,7 +630,6 @@ fun TerminalScreen(
                     }
                 }
             }
-
         }
     }
     val pickerCurrentHostId = activeTab?.spec?.hostId ?: hostId
@@ -662,9 +675,7 @@ fun TerminalScreen(
         }
         val prepared = vm.prepareTabOpenForHost(hostId) ?: return@LaunchedEffect
         vm.refreshTailscaleStatus()
-        // Biometric verification already happened in ApplicationNavController
-        // before navigating to this route — skip the redundant re-prompt.
-        openPreparedTab(prepared.spec, false, false)
+        openPreparedTab(prepared.spec, prepared.requiresVerification, false)
     }
 
     TerminalRouteExitEffect(
@@ -762,16 +773,15 @@ fun TerminalScreen(
         IchuDialog(
             onDismiss = { vm.onHostKeyDecision(false) },
             title = "Verify host key",
-            confirmLabel = "Accept",
+            confirmLabel =
+                if (prompt?.previousFingerprint == null) "Accept" else "Replace trusted key",
             dismissLabel = "Reject",
             onConfirm = { vm.onHostKeyDecision(true) },
-            properties = DialogProperties(
-                dismissOnBackPress = false,
-                dismissOnClickOutside = false,
-            ),
+            properties = DialogProperties(dismissOnBackPress = false, dismissOnClickOutside = false),
         ) {
             val previous = prompt?.previousFingerprint
             val message = buildString {
+                if (!prompt?.routeLabel.isNullOrEmpty()) append("${prompt?.routeLabel}\n")
                 append("Host: ${prompt?.host}:${prompt?.port}\n")
                 append("Algorithm: ${prompt?.algorithm}\n")
                 if (previous != null) {
@@ -832,7 +842,11 @@ fun TerminalScreen(
                                 Spacer(modifier = Modifier.height(12.dp))
                                 IchuButton(
                                     onClick = openAnotherSessionForCurrentHost,
-                                    modifier = Modifier.defaultMinSize(minWidth = 48.dp, minHeight = 48.dp),
+                                    modifier =
+                                        Modifier.defaultMinSize(
+                                            minWidth = 48.dp,
+                                            minHeight = 48.dp,
+                                        ),
                                     variant = IchuButtonVariant.Outlined,
                                     bracketed = true,
                                 ) {
@@ -893,7 +907,7 @@ fun TerminalScreen(
                         contentAlignment = Alignment.Center,
                     ) {
                         IchuText(
-                            "Connecting to $hostLabel",
+                            sessionState.connectionProgress ?: "Connecting to $hostLabel",
                             style = typography.body,
                         )
                     }
@@ -904,7 +918,7 @@ fun TerminalScreen(
                     verticalArrangement = Arrangement.Center,
                 ) {
                     IchuText(
-                        "Connecting to $hostLabel",
+                        sessionState.connectionProgress ?: "Connecting to $hostLabel",
                         style = typography.body,
                     )
                 }
@@ -1003,7 +1017,6 @@ fun TerminalScreen(
                         }
                     }
 
-
                     fun dispatchAccessoryAction(action: AccessoryAction) {
                         if (
                             action is AccessoryAction.SendText && ichuchuKeys.handleText(action.text)
@@ -1060,19 +1073,23 @@ fun TerminalScreen(
                                                     cursor.getColumnIndex(
                                                         OpenableColumns.DISPLAY_NAME
                                                     )
-                                                if (cursor.moveToFirst() && idx >= 0)
+                                                if (cursor.moveToFirst() && idx >= 0) {
                                                     cursor.getString(idx)
-                                                else null
-                                            } ?: uri.lastPathSegment ?: "uploaded_${index}"
+                                                } else {
+                                                    null
+                                                }
+                                            } ?: uri.lastPathSegment ?: "uploaded_$index"
                                     val fileSize =
                                         context.contentResolver
                                             .query(uri, null, null, null, null)
                                             ?.use { cursor ->
                                                 val idx =
                                                     cursor.getColumnIndex(OpenableColumns.SIZE)
-                                                if (cursor.moveToFirst() && idx >= 0)
+                                                if (cursor.moveToFirst() && idx >= 0) {
                                                     cursor.getLong(idx)
-                                                else 0L
+                                                } else {
+                                                    0L
+                                                }
                                             } ?: 0L
                                     try {
                                         val stream =
@@ -1150,8 +1167,9 @@ fun TerminalScreen(
                                 ActivityResultContracts.CreateDocument("application/octet-stream")
                         ) { uri: Uri? ->
                             val bytes = pendingDownloadBytes
-                            if (uri == null || bytes == null)
+                            if (uri == null || bytes == null) {
                                 return@rememberLauncherForActivityResult
+                            }
                             scope.launch(Dispatchers.IO) {
                                 runCatching {
                                         context.contentResolver.openOutputStream(uri)?.use {
@@ -1162,7 +1180,7 @@ fun TerminalScreen(
                                         withContext(Dispatchers.Main) {
                                             Toast.makeText(
                                                     context,
-                                                    "Downloaded ${pendingDownloadName}",
+                                                    "Downloaded $pendingDownloadName",
                                                     Toast.LENGTH_SHORT,
                                                 )
                                                 .show()
@@ -1189,8 +1207,11 @@ fun TerminalScreen(
                         modifier =
                             Modifier.fillMaxSize()
                                 .blur(
-                                    if (showTabSheet || showGlobalTabManager) 10.dp
-                                    else 0.dp
+                                    if (showTabSheet || showGlobalTabManager) {
+                                        10.dp
+                                    } else {
+                                        0.dp
+                                    }
                                 )
                                 .imePadding()
                     ) {
@@ -1225,7 +1246,11 @@ fun TerminalScreen(
                                     Spacer(modifier = Modifier.height(12.dp))
                                     IchuButton(
                                         onClick = openAnotherSessionForCurrentHost,
-                                        modifier = Modifier.defaultMinSize(minWidth = 48.dp, minHeight = 48.dp),
+                                        modifier =
+                                            Modifier.defaultMinSize(
+                                                minWidth = 48.dp,
+                                                minHeight = 48.dp,
+                                            ),
                                         variant = IchuButtonVariant.Outlined,
                                         bracketed = true,
                                     ) {
@@ -1437,7 +1462,11 @@ fun TerminalScreen(
                                             if (s != null) minOf(s.anchorIndex, s.focusIndex) else 0
                                         },
                                         onDragToCell = { newCell ->
-                                            selection = selection?.withStart(newCell, updateAnchor = isAnchorStart)
+                                            selection =
+                                                selection?.withStart(
+                                                    newCell,
+                                                    updateAnchor = isAnchorStart,
+                                                )
                                         },
                                     )
                                     TerminalSelectionHandle(
@@ -1453,7 +1482,11 @@ fun TerminalScreen(
                                             if (s != null) maxOf(s.anchorIndex, s.focusIndex) else 0
                                         },
                                         onDragToCell = { newCell ->
-                                            selection = selection?.withEnd(newCell, updateAnchor = !isAnchorStart)
+                                            selection =
+                                                selection?.withEnd(
+                                                    newCell,
+                                                    updateAnchor = !isAnchorStart,
+                                                )
                                         },
                                     )
 
@@ -1536,101 +1569,132 @@ fun TerminalScreen(
                                                         )
                                                     }
                                                 }
-                                                onTerminalKey = { key, codepoint, mods, action, charCode ->
-                                                    var shouldForwardToTerminal = true
-                                                    val overlayOpen = showTabSheet || showGlobalTabManager
-                                                    val overlayTabs = if (showGlobalTabManager) tabs else tabsForHost
-                                                    if (
-                                                        overlayOpen &&
-                                                            overlayTabs.isEmpty() &&
-                                                            action == GhosttyKeyAction.Press &&
-                                                            key == TerminalSpecialKey.Escape.engineKey
-                                                    ) {
-                                                        showTabSheet = false
-                                                        showGlobalTabManager = false
-                                                        shouldForwardToTerminal = false
-                                                    } else if (overlayOpen && overlayTabs.isNotEmpty()) {
-                                                        var consumedByTabSwitcher = true
-                                                        val isPress =
-                                                            action == GhosttyKeyAction.Press
-                                                        if (isPress && ichuchuKeys.isPrefixActive) {
-                                                            when (
-                                                                codepoint.toChar().lowercaseChar()
+                                                onTerminalKey =
+                                                    { key, codepoint, mods, action, charCode ->
+                                                        var shouldForwardToTerminal = true
+                                                        val overlayOpen =
+                                                            showTabSheet || showGlobalTabManager
+                                                        val overlayTabs =
+                                                            if (showGlobalTabManager) {
+                                                                tabs
+                                                            } else {
+                                                                tabsForHost
+                                                            }
+                                                        if (
+                                                            overlayOpen &&
+                                                                overlayTabs.isEmpty() &&
+                                                                action == GhosttyKeyAction.Press &&
+                                                                key ==
+                                                                    TerminalSpecialKey.Escape
+                                                                        .engineKey
+                                                        ) {
+                                                            showTabSheet = false
+                                                            showGlobalTabManager = false
+                                                            shouldForwardToTerminal = false
+                                                        } else if (
+                                                            overlayOpen && overlayTabs.isNotEmpty()
+                                                        ) {
+                                                            var consumedByTabSwitcher = true
+                                                            val isPress =
+                                                                action == GhosttyKeyAction.Press
+                                                            if (
+                                                                isPress &&
+                                                                    ichuchuKeys.isPrefixActive
                                                             ) {
-                                                                'n' -> {
-                                                                    vm.duplicateActiveTab()
-                                                                    vm.selectConnectionTab(
-                                                                        ConnectionTab.Terminal
-                                                                    )
-                                                                    showTabSheet = false
-                                                                    showGlobalTabManager = false
-                                                                }
-                                                                't' -> {
-                                                                    if (tabMode == TerminalTabMode.Strip) {
-                                                                        showGlobalTabManager = true
-                                                                    } else {
-                                                                        showTabSheet = true
+                                                                when (
+                                                                    codepoint
+                                                                        .toChar()
+                                                                        .lowercaseChar()
+                                                                ) {
+                                                                    'n' -> {
+                                                                        vm.duplicateActiveTab()
+                                                                        vm.selectConnectionTab(
+                                                                            ConnectionTab.Terminal
+                                                                        )
+                                                                        showTabSheet = false
+                                                                        showGlobalTabManager = false
                                                                     }
-                                                                }
-                                                                else -> {}
-                                                            }
-                                                            ichuchuKeys.reset()
-                                                            shouldForwardToTerminal = false
-                                                            consumedByTabSwitcher = true
-                                                        }
-                                                        if (isPress) {
-                                                            when (key) {
-                                                                TerminalSpecialKey.Left.engineKey,
-                                                                TerminalSpecialKey.Up.engineKey ->
-                                                                    focusedTabIndex =
-                                                                        (focusedTabIndex - 1).mod(
-                                                                            overlayTabs.size
-                                                                        )
-
-                                                                TerminalSpecialKey.Right.engineKey,
-                                                                TerminalSpecialKey.Down.engineKey ->
-                                                                    focusedTabIndex =
-                                                                        (focusedTabIndex + 1).mod(
-                                                                            overlayTabs.size
-                                                                        )
-
-                                                                TerminalSpecialKey.Enter
-                                                                    .engineKey -> {
-                                                                    overlayTabs
-                                                                        .getOrNull(focusedTabIndex)
-                                                                        ?.let {
-                                                                            vm.selectTab(it.id)
-                                                                            showTabSheet = false
-                                                                            showGlobalTabManager = false
+                                                                    't' -> {
+                                                                        if (
+                                                                            tabMode ==
+                                                                                TerminalTabMode
+                                                                                    .Strip
+                                                                        ) {
+                                                                            showGlobalTabManager =
+                                                                                true
+                                                                        } else {
+                                                                            showTabSheet = true
                                                                         }
+                                                                    }
+                                                                    else -> {}
                                                                 }
+                                                                ichuchuKeys.reset()
+                                                                shouldForwardToTerminal = false
+                                                                consumedByTabSwitcher = true
+                                                            }
+                                                            if (isPress) {
+                                                                when (key) {
+                                                                    TerminalSpecialKey.Left
+                                                                        .engineKey,
+                                                                    TerminalSpecialKey.Up
+                                                                        .engineKey ->
+                                                                        focusedTabIndex =
+                                                                            (focusedTabIndex - 1)
+                                                                                .mod(
+                                                                                    overlayTabs.size
+                                                                                )
 
-                                                                TerminalSpecialKey.Escape
-                                                                    .engineKey -> {
-                                                                    showTabSheet = false
-                                                                    showGlobalTabManager = false
+                                                                    TerminalSpecialKey.Right
+                                                                        .engineKey,
+                                                                    TerminalSpecialKey.Down
+                                                                        .engineKey ->
+                                                                        focusedTabIndex =
+                                                                            (focusedTabIndex + 1)
+                                                                                .mod(
+                                                                                    overlayTabs.size
+                                                                                )
+
+                                                                    TerminalSpecialKey.Enter
+                                                                        .engineKey -> {
+                                                                        overlayTabs
+                                                                            .getOrNull(
+                                                                                focusedTabIndex
+                                                                            )
+                                                                            ?.let {
+                                                                                vm.selectTab(it.id)
+                                                                                showTabSheet = false
+                                                                                showGlobalTabManager =
+                                                                                    false
+                                                                            }
+                                                                    }
+
+                                                                    TerminalSpecialKey.Escape
+                                                                        .engineKey -> {
+                                                                        showTabSheet = false
+                                                                        showGlobalTabManager = false
+                                                                    }
+
+                                                                    else ->
+                                                                        consumedByTabSwitcher =
+                                                                            false
                                                                 }
-
-                                                                else ->
-                                                                    consumedByTabSwitcher = false
+                                                            }
+                                                            if (consumedByTabSwitcher) {
+                                                                shouldForwardToTerminal = false
                                                             }
                                                         }
-                                                        if (consumedByTabSwitcher) {
-                                                            shouldForwardToTerminal = false
+                                                        if (shouldForwardToTerminal) {
+                                                            val mergedMods =
+                                                                mods or modifierState.terminalMods()
+                                                            vm.onHardwareKey(
+                                                                key,
+                                                                codepoint,
+                                                                mergedMods,
+                                                                action,
+                                                                charCode,
+                                                            )
                                                         }
                                                     }
-                                                    if (shouldForwardToTerminal) {
-                                                        val mergedMods =
-                                                            mods or modifierState.terminalMods()
-                                                        vm.onHardwareKey(
-                                                            key,
-                                                            codepoint,
-                                                            mergedMods,
-                                                            action,
-                                                            charCode,
-                                                        )
-                                                    }
-                                                }
                                                 setOnFocusChangeListener { _, hasFocus ->
                                                     vm.onFocusChanged(hasFocus)
                                                     if (hasFocus) {
@@ -1660,9 +1724,11 @@ fun TerminalScreen(
                                                     if (
                                                         CustomActionModifier.Enter in
                                                             decoded.modifiers
-                                                    )
+                                                    ) {
                                                         "\n"
-                                                    else ""
+                                                    } else {
+                                                        ""
+                                                    }
                                             val actionModifierState =
                                                 modifierStateForCustomAction(decoded.modifiers)
                                             vm.dispatchTextWithModifierState(
@@ -1782,7 +1848,10 @@ fun TerminalScreen(
                             }
                             val preDispatchModifierState = modifierState
                             val result =
-                                TerminalAccessoryDispatcher.dispatch(action, preDispatchModifierState)
+                                TerminalAccessoryDispatcher.dispatch(
+                                    action,
+                                    preDispatchModifierState,
+                                )
                             modifierState = result.modifierState
 
                             // Mirror main-handler IME suppression
@@ -1793,15 +1862,17 @@ fun TerminalScreen(
                             when (result.specialKey) {
                                 TerminalSpecialKey.Left,
                                 TerminalSpecialKey.Up -> {
-                                    if (tabsForHost.isNotEmpty())
+                                    if (tabsForHost.isNotEmpty()) {
                                         focusedTabIndex =
                                             (focusedTabIndex - 1).mod(tabsForHost.size)
+                                    }
                                 }
                                 TerminalSpecialKey.Right,
                                 TerminalSpecialKey.Down -> {
-                                    if (tabsForHost.isNotEmpty())
+                                    if (tabsForHost.isNotEmpty()) {
                                         focusedTabIndex =
                                             (focusedTabIndex + 1).mod(tabsForHost.size)
+                                    }
                                 }
                                 TerminalSpecialKey.Enter -> {
                                     tabsForHost.getOrNull(focusedTabIndex)?.let {
@@ -1871,11 +1942,13 @@ fun TerminalScreen(
                         onMultiplexerRefresh = vm::listMultiplexerSessionsForCurrentHost,
                         onMultiplexerNew = vm::createNextMultiplexerSession,
                         onMultiplexerAttach = { name ->
-                            vm.switchToMultiplexerSession(name, multiplexerState.sessionsSourceTabId)
+                            vm.switchToMultiplexerSession(
+                                name,
+                                multiplexerState.sessionsSourceTabId,
+                            )
                         },
                     )
                 }
-
             } else {
                 if (tabMode == TerminalTabMode.Strip) {
                     Column(modifier = screenInsetsModifier.fillMaxSize()) {
@@ -1894,7 +1967,7 @@ fun TerminalScreen(
                             val hostForMessage = activeTab?.spec?.tabLabel?.let { " $it" } ?: ""
                             val message =
                                 if (isReconnecting) {
-                                    "Reconnecting to${hostForMessage}..."
+                                    "Reconnecting to$hostForMessage..."
                                 } else {
                                     "Preparing terminal..."
                                 }
@@ -1909,7 +1982,7 @@ fun TerminalScreen(
                         val hostForMessage = activeTabForHost?.spec?.host?.let { " $it" } ?: ""
                         val message =
                             if (isReconnecting) {
-                                "Reconnecting to${hostForMessage}..."
+                                "Reconnecting to$hostForMessage..."
                             } else {
                                 "Preparing terminal..."
                             }
@@ -1996,7 +2069,11 @@ private fun TerminalRecoveryActions(
                 bracketed = true,
                 borderColor = colors.textMuted,
             ) {
-                IchuText(dismissMultiplexerLabel, style = typography.label, color = colors.textMuted)
+                IchuText(
+                    dismissMultiplexerLabel,
+                    style = typography.label,
+                    color = colors.textMuted,
+                )
             }
         } else {
             IchuButton(

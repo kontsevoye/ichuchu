@@ -11,7 +11,7 @@ import io.github.kontsevoye.ichuchu.model.Transport
 
 object IchuchuBackupCodec {
     const val FORMAT_VERSION: Int = 1
-    const val PAYLOAD_VERSION: Int = 2
+    const val PAYLOAD_VERSION: Int = 3
     const val KDF_ID_PBKDF2_HMAC_SHA1: Int = 1
     const val CIPHER_ID_AES_256_GCM: Int = 1
     const val KDF_ITERATIONS: Int = 210_000
@@ -26,10 +26,7 @@ object IchuchuBackupCodec {
 
     private val nativeBridge = NativeBackupBridge()
 
-    fun encrypt(
-        payload: BackupPayload,
-        passphrase: CharArray,
-    ): ByteArray {
+    fun encrypt(payload: BackupPayload, passphrase: CharArray): ByteArray {
         require(passphrase.isNotEmpty()) { "Backup passphrase must not be empty" }
         val plaintext = encodePayload(payload)
         return try {
@@ -102,6 +99,9 @@ object IchuchuBackupCodec {
             writer.writeBoolean(host.requireAuthOnConnect)
             writeNullableStringField(host.postConnectCommand, "post-connect command")
             writeNullableStringField(host.multiplexer?.id, "multiplexer")
+            if (host.jumpHostIds.size > 3) throw BackupFormatException("Too many jump hosts")
+            writer.writeInt(host.jumpHostIds.size)
+            host.jumpHostIds.forEach(writer::writeLong)
         }
 
         val encoded = writer.toByteArray()
@@ -137,68 +137,79 @@ object IchuchuBackupCodec {
 
         val keyCount = reader.readPositiveInt("key count")
         validateItemCount(keyCount, "key count")
-        val keys = buildList(keyCount) {
-            repeat(keyCount) {
-                add(
-                    BackupSshKey(
-                        id = reader.readLong(),
-                        name = readStringField("key name"),
-                        algorithm = readStringField("key algorithm"),
-                        privateKeyPem = readStringField("private key"),
-                        publicKeyOpenSsh = readStringField("public key"),
-                        createdAtEpochMs = reader.readLong(),
-                    ),
-                )
-            }
-        }
-
-        val hostCount = reader.readPositiveInt("host count")
-        validateItemCount(hostCount, "host count")
-        val hosts = buildList(hostCount) {
-            repeat(hostCount) {
-                val id = reader.readLong()
-                val name = readStringField("host name")
-                val host = readStringField("host")
-                val port = reader.readInt()
-                val username = readStringField("username")
-                val password = readStringField("password")
-                val keyId = reader.readNullableLong()
-                val keyPassphrase = readStringField("key passphrase")
-                val transport = readEnumField("transport", enumValues<Transport>())
-                val authMethod = readEnumField("auth method", enumValues<AuthMethod>())
-                val requireAuthOnConnect = reader.readBoolean()
-                val postConnectCommand = readNullableStringField("post-connect command")
-                val multiplexer = if (version >= 2) {
-                    readNullableMultiplexerField("multiplexer")
-                } else {
-                    null
-                }
-                if (transport != Transport.LocalShell) {
+        val keys =
+            buildList(keyCount) {
+                repeat(keyCount) {
                     add(
-                        BackupHostProfile(
-                            id = id,
-                            name = name,
-                            host = host,
-                            port = port,
-                            username = username,
-                            password = password,
-                            keyId = keyId,
-                            keyPassphrase = keyPassphrase,
-                            transport = transport,
-                            authMethod = authMethod,
-                            requireAuthOnConnect = requireAuthOnConnect,
-                            postConnectCommand = postConnectCommand,
-                            multiplexer = multiplexer,
-                        ),
+                        BackupSshKey(
+                            id = reader.readLong(),
+                            name = readStringField("key name"),
+                            algorithm = readStringField("key algorithm"),
+                            privateKeyPem = readStringField("private key"),
+                            publicKeyOpenSsh = readStringField("public key"),
+                            createdAtEpochMs = reader.readLong(),
+                        )
                     )
                 }
             }
-        }
+
+        val hostCount = reader.readPositiveInt("host count")
+        validateItemCount(hostCount, "host count")
+        val hosts =
+            buildList(hostCount) {
+                repeat(hostCount) {
+                    val id = reader.readLong()
+                    val name = readStringField("host name")
+                    val host = readStringField("host")
+                    val port = reader.readInt()
+                    val username = readStringField("username")
+                    val password = readStringField("password")
+                    val keyId = reader.readNullableLong()
+                    val keyPassphrase = readStringField("key passphrase")
+                    val transport = readEnumField("transport", enumValues<Transport>())
+                    val authMethod = readEnumField("auth method", enumValues<AuthMethod>())
+                    val requireAuthOnConnect = reader.readBoolean()
+                    val postConnectCommand = readNullableStringField("post-connect command")
+                    val multiplexer =
+                        if (version >= 2) {
+                            readNullableMultiplexerField("multiplexer")
+                        } else {
+                            null
+                        }
+                    val jumpHostIds =
+                        if (version >= 3) {
+                            val count = reader.readPositiveInt("jump host count")
+                            if (count > 3) throw BackupFormatException("Too many jump hosts")
+                            List(count) { reader.readLong() }
+                        } else {
+                            emptyList()
+                        }
+                    if (transport != Transport.LocalShell) {
+                        add(
+                            BackupHostProfile(
+                                id = id,
+                                name = name,
+                                host = host,
+                                port = port,
+                                username = username,
+                                password = password,
+                                keyId = keyId,
+                                keyPassphrase = keyPassphrase,
+                                transport = transport,
+                                authMethod = authMethod,
+                                requireAuthOnConnect = requireAuthOnConnect,
+                                postConnectCommand = postConnectCommand,
+                                multiplexer = multiplexer,
+                                jumpHostIds = jumpHostIds,
+                            )
+                        )
+                    }
+                }
+            }
 
         if (!reader.isEof()) throw BackupFormatException("Unexpected trailing payload data")
         return BackupPayload(keys = keys, hosts = hosts)
     }
-
 
     private fun decodeNativeResult(result: ByteArray, allowInvalidPassphrase: Boolean): ByteArray {
         if (result.isEmpty()) throw BackupFormatException("Invalid native backup response")

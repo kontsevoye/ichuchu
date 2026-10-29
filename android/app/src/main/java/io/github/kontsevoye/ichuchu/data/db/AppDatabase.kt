@@ -14,19 +14,22 @@ import io.github.kontsevoye.ichuchu.model.SshKey
 
 @Database(
     entities = [HostProfile::class, SshKey::class],
-    version = 11,
-    autoMigrations = [
-        AutoMigration(from = 5, to = 6),
-        AutoMigration(from = 6, to = 7, spec = AppDatabase.Migration6To7::class),
-        AutoMigration(from = 7, to = 8),
-        AutoMigration(from = 8, to = 9),
-        AutoMigration(from = 9, to = 10, spec = AppDatabase.Migration9To10::class),
-        AutoMigration(from = 10, to = 11),
-    ],
+    version = 12,
+    autoMigrations =
+        [
+            AutoMigration(from = 5, to = 6),
+            AutoMigration(from = 6, to = 7, spec = AppDatabase.Migration6To7::class),
+            AutoMigration(from = 7, to = 8),
+            AutoMigration(from = 8, to = 9),
+            AutoMigration(from = 9, to = 10, spec = AppDatabase.Migration9To10::class),
+            AutoMigration(from = 10, to = 11),
+            AutoMigration(from = 11, to = 12),
+        ],
 )
 @TypeConverters(Converters::class)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun hostProfileDao(): HostProfileDao
+
     abstract fun sshKeyDao(): SshKeyDao
 
     @DeleteColumn(tableName = "host_profiles", columnName = "keyPath")
@@ -43,8 +46,7 @@ abstract class AppDatabase : RoomDatabase() {
         @Volatile
         private var instance: AppDatabase? = null
 
-        fun getInstance(context: Context): AppDatabase {
-            return instance ?: synchronized(this) {
+        fun getInstance(context: Context): AppDatabase = instance ?: synchronized(this) {
                 instance ?: Room.databaseBuilder(
                     context.applicationContext,
                     AppDatabase::class.java,
@@ -54,6 +56,5 @@ abstract class AppDatabase : RoomDatabase() {
                     .build()
                     .also { instance = it }
             }
-        }
     }
 }

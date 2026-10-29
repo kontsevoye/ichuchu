@@ -5,6 +5,8 @@ import android.app.Application
 import android.content.pm.PackageManager
 import android.os.Build
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -25,8 +27,6 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.windowInsetsPadding
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.runtime.Composable
@@ -38,16 +38,14 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import kotlin.math.roundToInt
-import kotlinx.coroutines.launch
 import io.github.kontsevoye.ichuchu.model.HostProfile
 import io.github.kontsevoye.ichuchu.model.Transport
 import io.github.kontsevoye.ichuchu.service.terminal.TerminalSessionRepository
@@ -60,6 +58,8 @@ import io.github.kontsevoye.ichuchu.ui.components.IchuTextField
 import io.github.kontsevoye.ichuchu.ui.components.TuiBadge
 import io.github.kontsevoye.ichuchu.ui.theme.IchuColors
 import io.github.kontsevoye.ichuchu.ui.theme.IchuTypography
+import kotlin.math.roundToInt
+import kotlinx.coroutines.launch
 
 @Composable
 fun ServerListScreen(
@@ -87,18 +87,17 @@ fun ServerListScreen(
     var pendingConnectHostId by remember { mutableStateOf<Long?>(null) }
     var pendingLocalShell by remember { mutableStateOf(false) }
     var isSearchVisible by remember { mutableStateOf(false) }
-    val notificationPermissionLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission(),
-    ) {
-        val hostId = pendingConnectHostId
-        val openLocalShell = pendingLocalShell
-        pendingConnectHostId = null
-        pendingLocalShell = false
-        when {
-            openLocalShell -> onOpenLocalShell()
-            hostId != null -> onConnectServer(hostId)
+    val notificationPermissionLauncher =
+        rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
+            val hostId = pendingConnectHostId
+            val openLocalShell = pendingLocalShell
+            pendingConnectHostId = null
+            pendingLocalShell = false
+            when {
+                openLocalShell -> onOpenLocalShell()
+                hostId != null -> onConnectServer(hostId)
+            }
         }
-    }
     LaunchedEffect(hosts, selectedHostId) {
         val selected_id = selectedHostId
         if (selected_id != null && hosts.none { it.id == selected_id }) {
@@ -108,10 +107,8 @@ fun ServerListScreen(
 
     fun needsNotificationPermission(): Boolean =
         Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-            ContextCompat.checkSelfPermission(
-                context,
-                Manifest.permission.POST_NOTIFICATIONS,
-            ) != PackageManager.PERMISSION_GRANTED
+            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
+                PackageManager.PERMISSION_GRANTED
 
     fun openLocalShellWithPermission() {
         if (needsNotificationPermission()) {
@@ -154,7 +151,11 @@ fun ServerListScreen(
                             bracketed = true,
                             contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
                         ) {
-                            IchuText("filter", style = typography.label, color = colors.textSecondary)
+                            IchuText(
+                                "filter",
+                                style = typography.label,
+                                color = colors.textSecondary,
+                            )
                         }
                     }
                     IchuButton(
@@ -210,6 +211,10 @@ fun ServerListScreen(
                         val isConnected = host.id in connectedHostIds
                         HostCard(
                             host = host,
+                            routeLabel =
+                                host.jumpHostIds.joinToString(" → ") { id ->
+                                    hosts.firstOrNull { it.id == id }?.name ?: "#$id"
+                                },
                             isConnected = isConnected,
                             isSelected = selectedHostId == host.id,
                             onLongPress = { selectedHostId = host.id },
@@ -296,16 +301,8 @@ fun ServerListScreen(
 private fun SectionHeader(label: String) {
     val colors = IchuColors.current
     val typography = IchuTypography.current
-    Box(
-        modifier = Modifier.fillMaxWidth(),
-        contentAlignment = Alignment.CenterStart,
-    ) {
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(1.dp)
-                .background(colors.border),
-        )
+    Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterStart) {
+        Box(modifier = Modifier.fillMaxWidth().height(1.dp).background(colors.border))
         IchuText(
             "── $label",
             style = typography.labelSmall,
@@ -334,10 +331,7 @@ private fun EmptyState() {
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun LocalShellCard(
-    isOpen: Boolean,
-    onOpen: () -> Unit,
-) {
+private fun LocalShellCard(isOpen: Boolean, onOpen: () -> Unit) {
     val colors = IchuColors.current
     val typography = IchuTypography.current
 
@@ -393,6 +387,7 @@ private fun LocalShellCard(
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun HostCard(
+    routeLabel: String,
     host: HostProfile,
     isConnected: Boolean,
     isSelected: Boolean,
@@ -418,10 +413,7 @@ private fun HostCard(
         }
     }
 
-    Column(
-        modifier = Modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(6.dp),
-    ) {
+    Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         if (isSelected) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -449,17 +441,13 @@ private fun HostCard(
             }
         }
 
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(114.dp),
-        ) {
+        Box(modifier = Modifier.fillMaxWidth().height(114.dp)) {
             if (isConnected) {
                 Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .background(colors.warning.copy(alpha = 0.82f))
-                        .padding(end = 14.dp),
+                    modifier =
+                        Modifier.fillMaxSize()
+                            .background(colors.warning.copy(alpha = 0.82f))
+                            .padding(end = 14.dp)
                 ) {
                     IchuText(
                         "[disconnect]",
@@ -471,41 +459,39 @@ private fun HostCard(
             }
 
             Box(
-                modifier = Modifier
-                    .offset { IntOffset(swipeOffsetX.value.roundToInt(), 0) }
-                    .fillMaxSize()
-                    .pointerInput(host.id, isConnected) {
-                        if (!isConnected) {
-                            return@pointerInput
+                modifier =
+                    Modifier.offset { IntOffset(swipeOffsetX.value.roundToInt(), 0) }
+                        .fillMaxSize()
+                        .pointerInput(host.id, isConnected) {
+                            if (!isConnected) {
+                                return@pointerInput
+                            }
+                            detectHorizontalDragGestures(
+                                onHorizontalDrag = { change, dragAmount ->
+                                    change.consume()
+                                    val next =
+                                        (swipeOffsetX.value + dragAmount).coerceIn(-maxSwipePx, 0f)
+                                    scope.launch { swipeOffsetX.snapTo(next) }
+                                },
+                                onDragEnd = {
+                                    if (swipeOffsetX.value <= -disconnectThresholdPx) {
+                                        onDisconnect()
+                                        scope.launch {
+                                            swipeOffsetX.animateTo(0f, animationSpec = tween(140))
+                                        }
+                                    } else {
+                                        scope.launch {
+                                            swipeOffsetX.animateTo(0f, animationSpec = tween(140))
+                                        }
+                                    }
+                                },
+                            )
                         }
-                        detectHorizontalDragGestures(
-                            onHorizontalDrag = { change, dragAmount ->
-                                change.consume()
-                                val next = (swipeOffsetX.value + dragAmount).coerceIn(-maxSwipePx, 0f)
-                                scope.launch { swipeOffsetX.snapTo(next) }
-                            },
-                            onDragEnd = {
-                                if (swipeOffsetX.value <= -disconnectThresholdPx) {
-                                    onDisconnect()
-                                    scope.launch {
-                                        swipeOffsetX.animateTo(0f, animationSpec = tween(140))
-                                    }
-                                } else {
-                                    scope.launch {
-                                        swipeOffsetX.animateTo(0f, animationSpec = tween(140))
-                                    }
-                                }
-                            },
-                        )
-                    },
             ) {
                 IchuCard(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .combinedClickable(
-                            onClick = onConnect,
-                            onLongClick = onLongPress,
-                        ),
+                    modifier =
+                        Modifier.fillMaxSize()
+                            .combinedClickable(onClick = onConnect, onLongClick = onLongPress),
                     background = colors.surfaceVariant,
                     border = when {
                         isSelected -> colors.warning
@@ -543,11 +529,15 @@ private fun HostCard(
                                 overflow = TextOverflow.Ellipsis,
                             )
                             if (host.transport == Transport.TailscaleSSH) {
-                                TuiBadge(
-                                    text = "tailscale",
-                                    color = colors.accent,
-                                )
+                                TuiBadge(text = "tailscale", color = colors.accent)
                             }
+                        }
+                        if (host.jumpHostIds.isNotEmpty()) {
+                            IchuText(
+                                "via $routeLabel",
+                                style = typography.bodySmall,
+                                color = colors.textMuted,
+                            )
                         }
                         Spacer(modifier = Modifier.height(8.dp))
                         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {

@@ -75,9 +75,8 @@ class IchuchuBackupCoreTest {
         val oversizedName = "x".repeat((4 * 1024 * 1024) + 1)
 
         IchuchuBackupCodec.encodePayload(
-            samplePayload().copy(
-                keys = listOf(BackupSshKey.fromEntity(sampleKey(name = oversizedName))),
-            ),
+            samplePayload()
+                .copy(keys = listOf(BackupSshKey.fromEntity(sampleKey(name = oversizedName))))
         )
     }
 
@@ -177,9 +176,14 @@ class IchuchuBackupCoreTest {
 
     @Test(expected = BackupFormatException::class)
     fun payloadDecodeRejectsUnknownEnums() {
-        val payload = samplePayload().copy(
-            hosts = listOf(BackupHostProfile.fromEntity(sampleHost(authMethod = AuthMethod.Key))),
-        )
+        val payload =
+            samplePayload()
+                .copy(
+                    hosts =
+                        listOf(
+                            BackupHostProfile.fromEntity(sampleHost(authMethod = AuthMethod.Key))
+                        )
+                )
         val encoded = IchuchuBackupCodec.encodePayload(payload)
         replaceLastAscii(encoded, "Key", "Bog")
 
@@ -209,7 +213,10 @@ class IchuchuBackupCoreTest {
 
     @Test
     fun payloadV1DefaultsMultiplexerToNull() {
-        val v2 = IchuchuBackupCodec.encodePayload(samplePayload())
+        val v2 =
+            IchuchuBackupCodec.encodePayload(samplePayload()).let {
+                it.copyOf(it.size - Int.SIZE_BYTES)
+            }
         writeIntAt(v2, offset = Int.SIZE_BYTES, value = 1)
         val v1 = v2.copyOf(v2.size - encodedNullableStringSize(MultiplexerType.Tmux.id))
 
@@ -217,6 +224,44 @@ class IchuchuBackupCoreTest {
 
         assertNull(decoded.hosts.single().multiplexer)
         assertEquals("echo hello", decoded.hosts.single().postConnectCommand)
+    }
+
+    @Test
+    fun payloadV2DefaultsJumpHostsToEmpty() {
+        val bytes =
+            IchuchuBackupCodec.encodePayload(samplePayload()).let {
+                it.copyOf(it.size - Int.SIZE_BYTES)
+            }
+        writeIntAt(bytes, Int.SIZE_BYTES, 2)
+        val host = IchuchuBackupCodec.decodePayload(bytes).hosts.single()
+        assertEquals(emptyList<Long>(), host.jumpHostIds)
+        assertEquals(MultiplexerType.Tmux, host.multiplexer)
+    }
+
+    @Test
+    fun jumpRoutesRoundtripAndImportPreserveExportedReferencesForRemapping() {
+        val bastion =
+            sampleHost(transport = Transport.SSH)
+                .copy(id = 20L, name = "bastion", host = "bastion.example", multiplexer = null)
+        val target =
+            sampleHost(transport = Transport.SSH)
+                .copy(id = 10L, name = "target", jumpHostIds = listOf(20L))
+        val payload = buildBackupPayload(listOf(sampleKey()), listOf(target, bastion))
+        val decoded = IchuchuBackupCodec.decodePayload(IchuchuBackupCodec.encodePayload(payload))
+        assertEquals(listOf(20L), decoded.hosts.first().jumpHostIds)
+        val plan = IchuchuBackupImportPlanner.planImport(decoded, emptyList(), emptyList())
+        assertEquals(listOf(20L), plan.hostActions.first().host.jumpHostIds)
+        assertEquals(listOf(10L, 20L), plan.hostActions.map { it.exportedId })
+        assertTrue(plan.hostActions.all { it.host.id == 0L })
+    }
+
+    @Test(expected = BackupFormatException::class)
+    fun importRejectsMissingJumpHostInsteadOfConnectingDirectly() {
+        val payload =
+            samplePayload().let {
+                it.copy(hosts = it.hosts.map { h -> h.copy(jumpHostIds = listOf(9876L)) })
+            }
+        IchuchuBackupImportPlanner.planImport(payload, emptyList(), emptyList())
     }
 
     @Test(expected = BackupFormatException::class)
@@ -280,12 +325,10 @@ class IchuchuBackupCoreTest {
         return offset
     }
 
-    private fun readIntAt(bytes: ByteArray, offset: Int): Int {
-        return ((bytes[offset].toInt() and 0xff) shl 24) or
+    private fun readIntAt(bytes: ByteArray, offset: Int): Int = ((bytes[offset].toInt() and 0xff) shl 24) or
             ((bytes[offset + 1].toInt() and 0xff) shl 16) or
             ((bytes[offset + 2].toInt() and 0xff) shl 8) or
             (bytes[offset + 3].toInt() and 0xff)
-    }
 
     private fun writeIntAt(bytes: ByteArray, offset: Int, value: Int) {
         bytes[offset] = (value ushr 24).toByte()

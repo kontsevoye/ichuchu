@@ -8,6 +8,7 @@ import androidx.lifecycle.viewModelScope
 import io.github.kontsevoye.ichuchu.data.db.AppDatabase
 import io.github.kontsevoye.ichuchu.data.repository.HostRepository
 import io.github.kontsevoye.ichuchu.data.repository.KeyGenerationResult
+import io.github.kontsevoye.ichuchu.data.repository.SettingsRepository
 import io.github.kontsevoye.ichuchu.data.repository.SshKeyRepository
 import io.github.kontsevoye.ichuchu.model.AuthMethod
 import io.github.kontsevoye.ichuchu.model.HostProfile
@@ -18,7 +19,12 @@ import io.github.kontsevoye.ichuchu.service.ssh.HostKeyCheck
 import io.github.kontsevoye.ichuchu.service.ssh.HostKeyPolicy
 import io.github.kontsevoye.ichuchu.service.ssh.HostKeyStore
 import io.github.kontsevoye.ichuchu.service.ssh.NativeSshService
+import io.github.kontsevoye.ichuchu.service.ssh.SshHostKeyRequest
+import io.github.kontsevoye.ichuchu.service.ssh.SshJumpHost
+import io.github.kontsevoye.ichuchu.service.terminal.HostKeyPrompt
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -27,10 +33,10 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 
-class AddServerViewModel(application: Application, private val hostId: Long?) :
-    AndroidViewModel(application) {
+class AddServerViewModel(application: Application, private val hostId: Long?) : AndroidViewModel(application) {
     companion object {
         fun factory(application: Application, hostId: Long?): ViewModelProvider.Factory =
             object : ViewModelProvider.Factory {
@@ -61,6 +67,39 @@ class AddServerViewModel(application: Application, private val hostId: Long?) :
     private val _testState = MutableStateFlow(ConnectionTestState())
     val testState: StateFlow<ConnectionTestState> = _testState.asStateFlow()
 
+    private val _hosts = MutableStateFlow<List<HostProfile>>(emptyList())
+    val hosts: StateFlow<List<HostProfile>> = _hosts.asStateFlow()
+    private val _hostKeyPrompt = MutableStateFlow<HostKeyPrompt?>(null)
+    val hostKeyPrompt: StateFlow<HostKeyPrompt?> = _hostKeyPrompt.asStateFlow()
+    private val testLock = Any()
+    @Volatile private var testGeneration = 0L
+    private var hostKeyDecision: CompletableDeferred<Boolean>? = null
+    private var testJob: Job? = null
+    @Volatile private var testSsh: NativeSshService? = null
+    val requiresTestVerification: Boolean
+        get() =
+            SettingsRepository.getInstance(getApplication()).requireAuthOnConnect.value ||
+                _form.value.requireAuthOnConnect ||
+                _hosts.value.any { it.id in _form.value.jumpHostIds && it.requireAuthOnConnect }
+
+    fun respondToHostKey(accepted: Boolean) =
+        synchronized(testLock) { hostKeyDecision?.complete(accepted) }
+
+    fun cancelTest() =
+        synchronized(testLock) {
+            testGeneration += 1
+            testSsh?.interrupt()
+            hostKeyDecision?.cancel()
+            testJob?.cancel()
+            _hostKeyPrompt.value = null
+            _testState.value = ConnectionTestState()
+        }
+
+    override fun onCleared() {
+        cancelTest()
+        super.onCleared()
+    }
+
     private val _allKeys = MutableStateFlow<List<SshKey>>(emptyList())
     val keys: StateFlow<List<SshKey>> = _allKeys.asStateFlow()
 
@@ -68,6 +107,7 @@ class AddServerViewModel(application: Application, private val hostId: Long?) :
     val errorMessage: SharedFlow<String> = _errorMessage.asSharedFlow()
 
     init {
+        viewModelScope.launch { hostRepository.observeAll().collect { _hosts.value = it } }
         viewModelScope.launch { sshKeyRepository.observeAll().collect { _allKeys.value = it } }
         if (hostId != null) {
             viewModelScope.launch {
@@ -76,6 +116,7 @@ class AddServerViewModel(application: Application, private val hostId: Long?) :
                 _form.value =
                     AddServerForm(
                         id = profile.id,
+                        jumpHostIds = profile.jumpHostIds,
                         name = profile.name,
                         host = profile.host,
                         port = profile.port.toString(),
@@ -200,98 +241,169 @@ class AddServerViewModel(application: Application, private val hostId: Long?) :
             )
     }
 
-    fun testConnection() {
+    fun addJumpHost(id: Long) {
         val current = _form.value
-        val host = current.host.filterNot { it.isWhitespace() }
-        if (host.isBlank()) return
-        val username = current.username.trim()
-        if (username.isBlank()) return
-        _testState.value = ConnectionTestState(status = ConnectionTestStatus.Running)
-        viewModelScope.launch {
-            var hostKeyError: String? = null
-            val result =
-                withContext(Dispatchers.IO) {
-                    runCatching {
-                        val port = current.port.toIntOrNull() ?: 22
-                        val policy = HostKeyPolicy { host, port, algorithm, keyBytes ->
-                            when (
-                                val result = hostKeyStore.check(host, port, algorithm, keyBytes)
+        if (current.jumpHostIds.size < 3 && id !in current.jumpHostIds && id != current.id) {
+            _form.value = current.copy(jumpHostIds = current.jumpHostIds + id)
+        }
+    }
+
+    fun removeJumpHost(id: Long) {
+        _form.value = _form.value.copy(jumpHostIds = _form.value.jumpHostIds - id)
+    }
+
+    fun moveJumpHost(index: Int, delta: Int) {
+        val ids = _form.value.jumpHostIds.toMutableList()
+        val to = index + delta
+        if (index !in ids.indices || to !in ids.indices) return
+        val value = ids.removeAt(index)
+        ids.add(to, value)
+        _form.value = _form.value.copy(jumpHostIds = ids)
+    }
+
+    fun testConnection(verified: Boolean = false) {
+        if (requiresTestVerification && !verified) return
+        cancelTest()
+        val current = _form.value
+        val generation = testGeneration
+        _testState.value = ConnectionTestState(ConnectionTestStatus.Running)
+        testJob =
+            viewModelScope.launch {
+                val result =
+                    withContext(Dispatchers.IO) {
+                        runCatching {
+                            val profile = current.toProfile()
+                            val hops =
+                                SshJumpHost.resolve(
+                                    profile,
+                                    db.hostProfileDao().getAll(),
+                                    db.sshKeyDao().getAll(),
+                                )
+                            check(
+                                verified ||
+                                    !(profile.requireAuthOnConnect ||
+                                        hops.any { it.profile.requireAuthOnConnect } ||
+                                        SettingsRepository.getInstance(getApplication())
+                                            .requireAuthOnConnect
+                                            .value)
                             ) {
-                                is HostKeyCheck.Match -> true
-                                is HostKeyCheck.Unknown -> {
-                                    hostKeyError =
-                                        "host key not verified — connect once to verify this host"
-                                    false
+                                "Authenticate before testing this SSH route"
+                            }
+                            val policy = HostKeyPolicy { request ->
+                                verifyTestHostKey(request, generation)
+                            }
+                            NativeSshService(hostKeyPolicy = policy).use { ssh ->
+                                synchronized(testLock) {
+                                    if (generation != testGeneration) {
+                                        throw kotlinx.coroutines.CancellationException(
+                                            "Test cancelled"
+                                        )
+                                    }
+                                    testSsh = ssh
                                 }
-                                is HostKeyCheck.Changed -> {
-                                    hostKeyError =
-                                        "host key CHANGED (${result.previousFingerprint} → ${result.fingerprint}) — connect once to verify this host"
-                                    false
-                                }
+                                ssh.connect(
+                                    isCancelled = { generation != testGeneration },
+                                    host = profile.host,
+                                    port = profile.port,
+                                    username = profile.username,
+                                    authMethod = current.authMethod,
+                                    password = current.password,
+                                    publicKeyOpenSsh = current.publicKeyOpenSsh,
+                                    privateKeyPem = current.privateKeyPem,
+                                    keyPassphrase = current.keyPassphrase,
+                                    jumpHosts = hops,
+                                    onProgress = {
+                                        synchronized(testLock) {
+                                            if (generation == testGeneration) {
+                                                _testState.value =
+                                                    ConnectionTestState(
+                                                        ConnectionTestStatus.Running,
+                                                        it,
+                                                    )
+                                            }
+                                        }
+                                    },
+                                )
                             }
                         }
-                        NativeSshService(hostKeyPolicy = policy).use { nativeSsh ->
-                            check(nativeSsh.isAvailable()) { "Native SSH unavailable" }
-                            nativeSsh.connect(
-                                host = host,
-                                port = port,
-                                username = username,
-                                authMethod = current.authMethod,
-                                password =
-                                    if (current.authMethod == AuthMethod.Password) current.password
-                                    else "",
-                                publicKeyOpenSsh = current.publicKeyOpenSsh,
-                                privateKeyPem = current.privateKeyPem,
-                                keyPassphrase = current.keyPassphrase,
+                    }
+                if (generation != testGeneration) return@launch
+                testSsh = null
+                _hostKeyPrompt.value = null
+                _testState.value =
+                    result.fold(
+                        { ConnectionTestState(ConnectionTestStatus.Success, "SSH route verified") },
+                        {
+                            ConnectionTestState(
+                                ConnectionTestStatus.Error,
+                                it.message ?: "Connection failed",
                             )
-                        }
+                        },
+                    )
+            }
+    }
+
+    private fun verifyTestHostKey(request: SshHostKeyRequest, generation: Long): Boolean {
+        val check =
+            hostKeyStore.check(request.trustHost, request.port, request.algorithm, request.keyBytes)
+        if (check == HostKeyCheck.Match) return true
+        val decision = CompletableDeferred<Boolean>()
+        synchronized(testLock) {
+            if (generation != testGeneration) {
+                throw kotlinx.coroutines.CancellationException("Test cancelled")
+            }
+            hostKeyDecision = decision
+            _hostKeyPrompt.value =
+                HostKeyPrompt(
+                    routeLabel = request.routeLabel,
+                    host = request.host,
+                    port = request.port,
+                    algorithm = request.algorithm,
+                    fingerprint =
+                        when (check) {
+                            is HostKeyCheck.Unknown -> check.fingerprint
+                            is HostKeyCheck.Changed -> check.fingerprint
+                            else -> error("Unexpected host key check")
+                        },
+                    previousFingerprint = (check as? HostKeyCheck.Changed)?.previousFingerprint,
+                )
+        }
+        val accepted =
+            try {
+                runBlocking { decision.await() }
+            } finally {
+                synchronized(testLock) {
+                    if (hostKeyDecision === decision) {
+                        hostKeyDecision = null
+                        _hostKeyPrompt.value = null
                     }
                 }
-            _testState.value =
-                if (result.isSuccess) {
-                    ConnectionTestState(
-                        status = ConnectionTestStatus.Success,
-                        message = "Connected",
-                    )
-                } else {
-                    ConnectionTestState(
-                        status = ConnectionTestStatus.Error,
-                        message =
-                            hostKeyError ?: result.exceptionOrNull()?.message ?: "Connection failed",
-                    )
-                }
+            }
+        if (accepted) {
+            hostKeyStore.saveKey(
+                request.trustHost,
+                request.port,
+                request.algorithm,
+                request.keyBytes,
+            )
         }
+        return accepted
     }
 
     fun save(onComplete: () -> Unit) {
         val current = _form.value
         val host = current.host.filterNot { it.isWhitespace() }
-        val port = current.port.toIntOrNull() ?: 22
         if (!current.canSave() || host.isBlank()) return
         val username = current.username.trim()
         if (username.isBlank()) return
 
         viewModelScope.launch {
-            val profile =
-                HostProfile(
-                    id = current.id ?: 0L,
-                    name = current.name.trim(),
-                    host = host,
-                    port = port,
-                    username = username,
-                    password = current.password,
-                    keyId = current.keyId,
-                    keyPassphrase = current.keyPassphrase,
-                    transport = current.transport,
-                    authMethod = current.authMethod,
-                    requireAuthOnConnect = current.requireAuthOnConnect,
-                    postConnectCommand = current.postConnectCommand.trim().ifBlank { null },
-                    multiplexer =
-                        current.multiplexer.takeIf {
-                            current.transport != Transport.Mosh && it?.runtimeSupported == true
-                        },
-                )
-            hostRepository.upsert(profile)
+            try {
+                hostRepository.upsert(current.toProfile())
+            } catch (e: Exception) {
+                _errorMessage.emit(e.message ?: "Invalid route")
+                return@launch
+            }
             onComplete()
         }
     }
@@ -299,6 +411,7 @@ class AddServerViewModel(application: Application, private val hostId: Long?) :
 
 data class AddServerForm(
     val id: Long? = null,
+    val jumpHostIds: List<Long> = emptyList(),
     val name: String = "",
     val host: String = "",
     val port: String = "22",
@@ -316,7 +429,10 @@ data class AddServerForm(
 )
 
 fun AddServerForm.canSave(): Boolean {
-    if (name.isBlank() || host.isBlank() || username.isBlank()) return false
+    if (name.isBlank() || host.isBlank() || username.isBlank() || port.toIntOrNull() !in 1..65535) {
+        return false
+    }
+    if (jumpHostIds.isNotEmpty() && transport != Transport.SSH) return false
     return when (authMethod) {
         AuthMethod.Key,
         AuthMethod.KeyWithPassphrase -> keyId != null && privateKeyPem.isNotBlank()
@@ -335,3 +451,22 @@ data class ConnectionTestState(
     val status: ConnectionTestStatus = ConnectionTestStatus.Idle,
     val message: String? = null,
 )
+
+private fun AddServerForm.toProfile(): HostProfile =
+    HostProfile(
+        id = id ?: 0L,
+        name = name.trim(),
+        host = host.trim(),
+        port = port.toIntOrNull() ?: error("Invalid port"),
+        username = username.trim(),
+        password = password,
+        keyId = keyId,
+        keyPassphrase = keyPassphrase,
+        transport = transport,
+        authMethod = authMethod,
+        requireAuthOnConnect = requireAuthOnConnect,
+        jumpHostIds = jumpHostIds,
+        postConnectCommand = postConnectCommand.trim().ifBlank { null },
+        multiplexer =
+            multiplexer.takeIf { transport != Transport.Mosh && it?.runtimeSupported == true },
+    )

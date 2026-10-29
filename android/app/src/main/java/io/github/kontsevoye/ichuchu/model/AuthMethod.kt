@@ -6,3 +6,6 @@ enum class AuthMethod {
     Key,
     KeyWithPassphrase,
 }
+
+fun AuthMethod.requiresKey(): Boolean =
+    this == AuthMethod.Key || this == AuthMethod.KeyWithPassphrase

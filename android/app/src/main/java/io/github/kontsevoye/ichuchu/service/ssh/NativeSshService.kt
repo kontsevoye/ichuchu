@@ -96,6 +96,23 @@ class NativeSshService(
     }
 
     private var handle: Long = 0L
+    private val handles = mutableListOf<Long>()
+    private val lifecycleLock = Any()
+    @Volatile private var interrupted = false
+    private var cancellationRequested: () -> Boolean = { false }
+
+    /** May be called off the connection executor to wake a blocked network call. */
+    fun interrupt() =
+        synchronized(lifecycleLock) {
+            interrupted = true
+            handles.firstOrNull()?.let(bridge::nativeInterrupt)
+        }
+
+    private fun checkInterrupted() {
+        if (interrupted || cancellationRequested()) {
+            throw java.util.concurrent.CancellationException("SSH connection cancelled")
+        }
+    }
 
     fun isAvailable(): Boolean = bridge.isLoaded()
 
@@ -108,28 +125,118 @@ class NativeSshService(
         publicKeyOpenSsh: String = "",
         privateKeyPem: String = "",
         keyPassphrase: String = "",
+        jumpHosts: List<SshJumpHost> = emptyList(),
+        onProgress: (String) -> Unit = {},
+        isCancelled: () -> Boolean = { false },
+    ) {
+        require(jumpHosts.size <= 3) { "Too many SSH jump hosts" }
+        close()
+        interrupted = false
+        cancellationRequested = isCancelled
+        checkInterrupted()
+        val endpoints =
+            jumpHosts +
+                SshJumpHost(
+                    io.github.kontsevoye.ichuchu.model.HostProfile(
+                        name = host,
+                        host = host,
+                        port = port,
+                        username = username,
+                        password = password,
+                        authMethod = authMethod,
+                        keyPassphrase = keyPassphrase,
+                    ),
+                    publicKeyOpenSsh,
+                    privateKeyPem,
+                )
+        var parentHandle = 0L
+        try {
+            endpoints.forEachIndexed { index, endpoint ->
+                checkInterrupted()
+                val p = endpoint.profile
+                val label = "${index + 1}/${endpoints.size} · ${p.name}"
+                var stage = "Connecting"
+                onProgress("$label · $stage")
+                try {
+                    connectOne(
+                        p.host,
+                        p.port,
+                        p.username,
+                        p.authMethod,
+                        p.password,
+                        endpoint.publicKeyOpenSsh,
+                        endpoint.privateKeyPem,
+                        p.keyPassphrase,
+                        parentHandle,
+                        sshTrustHost(p.host, p.port, p.username, jumpHosts.take(index)),
+                        label,
+                    ) { nextStage ->
+                        stage = nextStage
+                        onProgress("$label · $stage")
+                    }
+                    parentHandle = handle
+                } catch (e: java.util.concurrent.CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    val retryable =
+                        stage == "Connecting" &&
+                            e.message?.contains("TCP forwarding failed") != true
+                    throw SshConnectionException("$label · $stage: ${e.message}", retryable, e)
+                }
+            }
+        } catch (e: Throwable) {
+            close()
+            throw e
+        }
+    }
+
+    private fun connectOne(
+        host: String,
+        port: Int,
+        username: String,
+        authMethod: AuthMethod = AuthMethod.Password,
+        password: String,
+        publicKeyOpenSsh: String = "",
+        privateKeyPem: String = "",
+        keyPassphrase: String = "",
+        parentHandle: Long,
+        trustHost: String,
+        routeLabel: String,
+        onStage: (String) -> Unit,
     ) {
         require(bridge.isLoaded()) { "Native SSH unavailable: ${bridge.nativeStatus()}" }
-        close()
-        handle = bridge.nativeCreateSession()
-        check(handle != 0L) { "Failed to create native SSH session" }
-
-        if (!bridge.nativeConnect(handle, host, port, username)) {
-            throw IllegalStateException(
-                bridge.nativeGetLastError(handle) ?: "Native SSH connect failed"
-            )
+        checkInterrupted()
+        synchronized(lifecycleLock) {
+            checkInterrupted()
+            handle = bridge.nativeCreateSession()
+            check(handle != 0L) { "Failed to create native SSH session" }
+            handles += handle
         }
-
+        val connected =
+            if (parentHandle == 0L) {
+                bridge.nativeConnect(handle, host, port, username)
+            } else {
+                bridge.nativeConnectVia(handle, parentHandle, host, port, username)
+            }
+        checkInterrupted()
+        check(connected) { bridge.nativeGetLastError(handle) ?: "Native SSH connect failed" }
+        onStage("Verifying host key")
         val algorithm =
             bridge.nativeGetHostKeyAlgorithm(handle)
                 ?: throw IllegalStateException("Missing server host key algorithm")
         val keyBytes =
             bridge.nativeGetHostKey(handle)
                 ?: throw IllegalStateException("Missing server host key")
-        if (!hostKeyPolicy.verify(host, port, algorithm, keyBytes)) {
+        if (
+            !hostKeyPolicy.verify(
+                SshHostKeyRequest(host, port, algorithm, keyBytes, trustHost, routeLabel)
+            )
+        ) {
             throw IllegalStateException("Host key rejected")
         }
 
+        checkInterrupted()
+        onStage("Authenticating")
         when (authMethod) {
             AuthMethod.None -> {
                 if (!bridge.nativeAuthenticateNone(handle)) {
@@ -212,7 +319,17 @@ class NativeSshService(
 
     fun openExecPty(command: String, cols: Int, rows: Int, widthPx: Int, heightPx: Int) {
         check(handle != 0L) { "Not connected" }
-        if (!bridge.nativeOpenExecPty(handle, command, cols, rows, widthPx, heightPx, "xterm-ghostty")) {
+        if (
+            !bridge.nativeOpenExecPty(
+                handle,
+                command,
+                cols,
+                rows,
+                widthPx,
+                heightPx,
+                "xterm-ghostty",
+            )
+        ) {
             throw IllegalStateException(
                 bridge.nativeGetLastError(handle) ?: "Native SSH exec PTY open failed"
             )
@@ -389,10 +506,10 @@ class NativeSshService(
         }
     }
 
-    override fun close() {
-        if (handle == 0L) return
-        bridge.nativeClose(handle)
-        bridge.nativeDestroySession(handle)
-        handle = 0L
-    }
+    override fun close() =
+        synchronized(lifecycleLock) {
+            handles.asReversed().forEach(bridge::nativeDestroySession)
+            handles.clear()
+            handle = 0L
+        }
 }

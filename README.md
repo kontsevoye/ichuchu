@@ -81,3 +81,5 @@ device; set `ANDROID_SERIAL` when selecting a device.
 
 See [building and signing instructions](docs/building.md) for toolchain versions,
 caches, external signing keys, and manual builds without Nix.
+
+SSH routes: [Configure jump hosts](docs/ssh-jump-hosts.md).

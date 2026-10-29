@@ -13,10 +13,7 @@ class BackupFormatException(message: String) : Exception(message)
 
 class InvalidBackupPassphraseException : Exception("Invalid backup passphrase")
 
-data class BackupPayload(
-    val keys: List<BackupSshKey>,
-    val hosts: List<BackupHostProfile>,
-) {
+data class BackupPayload(val keys: List<BackupSshKey>, val hosts: List<BackupHostProfile>) {
     fun toEntities(): Pair<List<SshKey>, List<HostProfile>> =
         keys.map { it.toEntity() } to hosts.map { it.toEntity() }
 }
@@ -64,41 +61,43 @@ data class BackupHostProfile(
     val requireAuthOnConnect: Boolean,
     val postConnectCommand: String?,
     val multiplexer: MultiplexerType?,
+    val jumpHostIds: List<Long> = emptyList(),
 ) {
-    fun toEntity(
-        idOverride: Long = id,
-        keyIdOverride: Long? = keyId,
-    ): HostProfile = HostProfile(
-        id = idOverride,
-        name = name,
-        host = host,
-        port = port,
-        username = username,
-        password = password,
-        keyId = keyIdOverride,
-        keyPassphrase = keyPassphrase,
-        transport = transport,
-        authMethod = authMethod,
-        requireAuthOnConnect = requireAuthOnConnect,
-        postConnectCommand = postConnectCommand,
-        multiplexer = multiplexer,
-    )
+    fun toEntity(idOverride: Long = id, keyIdOverride: Long? = keyId): HostProfile =
+        HostProfile(
+            id = idOverride,
+            name = name,
+            host = host,
+            port = port,
+            username = username,
+            password = password,
+            keyId = keyIdOverride,
+            keyPassphrase = keyPassphrase,
+            transport = transport,
+            authMethod = authMethod,
+            requireAuthOnConnect = requireAuthOnConnect,
+            postConnectCommand = postConnectCommand,
+            multiplexer = multiplexer,
+            jumpHostIds = jumpHostIds,
+        )
 
     companion object {
-        fun fromEntity(host: HostProfile): BackupHostProfile = BackupHostProfile(
-            id = host.id,
-            name = host.name,
-            host = host.host,
-            port = host.port,
-            username = host.username,
-            password = host.password,
-            keyId = host.keyId,
-            keyPassphrase = host.keyPassphrase,
-            transport = host.transport,
-            authMethod = host.authMethod,
-            requireAuthOnConnect = host.requireAuthOnConnect,
-            postConnectCommand = host.postConnectCommand,
-            multiplexer = host.multiplexer,
-        )
+        fun fromEntity(host: HostProfile): BackupHostProfile =
+            BackupHostProfile(
+                id = host.id,
+                name = host.name,
+                host = host.host,
+                port = host.port,
+                username = host.username,
+                password = host.password,
+                keyId = host.keyId,
+                keyPassphrase = host.keyPassphrase,
+                transport = host.transport,
+                authMethod = host.authMethod,
+                requireAuthOnConnect = host.requireAuthOnConnect,
+                postConnectCommand = host.postConnectCommand,
+                multiplexer = host.multiplexer,
+                jumpHostIds = host.jumpHostIds,
+            )
     }
 }
