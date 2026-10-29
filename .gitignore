@@ -10,7 +10,7 @@ local.properties
 .idea/
 .kotlin/
 .npm/
-.plans/
+/.plans/
 .cache/
 __pycache__/
 .zig-cache/
@@ -35,3 +35,9 @@ zig-out/
 # Generated updater acceptance APKs; only the isolated test build uses these.
 android/app/src/updateTest/assets/*.apk
 android/app/src/updateTest/assets/*.apk.idsig
+
+# Local planning and investigation notes
+/docs/update-platform-notes.md
+/docs/self-update-plan.md
+/docs/dependency-trust.md
+/docs/security-hardening.md
