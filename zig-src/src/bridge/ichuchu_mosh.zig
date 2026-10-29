@@ -191,7 +191,8 @@ export fn Java_io_github_kontsevoye_ichuchu_service_mosh_NativeMoshBridge_native
             meta[1] = @intCast(written);
             meta[2] = out_cols;
             meta[3] = out_rows;
-            meta[4] = @intCast(echo_ack);
+            // SSP uses UINT64_MAX as a shutdown sentinel; preserve its bit pattern.
+            meta[4] = @bitCast(echo_ack);
             env.*.*.ReleaseLongArrayElements.?(env, j_out_meta, meta, 0);
         }
     }
@@ -220,8 +221,8 @@ export fn Java_io_github_kontsevoye_ichuchu_service_mosh_NativeMoshBridge_native
         if (state != null) {
             state[0] = runtime_state.state;
             state[1] = runtime_state.last_failure_code;
-            state[2] = @intCast(runtime_state.last_state_num_sent);
-            state[3] = @intCast(runtime_state.last_state_num_received);
+            state[2] = @bitCast(runtime_state.last_state_num_sent);
+            state[3] = @bitCast(runtime_state.last_state_num_received);
             state[4] = runtime_state.pending_outbound;
             state[5] = runtime_state.pending_host_ops;
             state[6] = runtime_state.current_rto_ms;

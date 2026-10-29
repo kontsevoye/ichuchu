@@ -7,7 +7,7 @@ const libssh2_src: []const []const u8 = &.{
     "src/channel.c",
     "src/cipher-chachapoly.c",
     "src/comp.c",
-    "src/crypto.c",
+    "src/openssl.c",
     "src/crypt.c",
     "src/global.c",
     "src/hostkey.c",
@@ -53,6 +53,12 @@ pub fn build(b: *std.Build) void {
     }, .{
         .LIBSSH2_API = "",
         .LIBSSH2_HAVE_ZLIB = false,
+        .HAVE_UNISTD_H = true,
+        .HAVE_SYS_SELECT_H = true,
+        .HAVE_SYS_TIME_H = true,
+        .HAVE_SYS_UN_H = true,
+        .HAVE_POLL = true,
+        .HAVE_O_NONBLOCK = true,
         .HAVE_SYS_UIO_H = true,
         .HAVE_WRITEV = true,
         .HAVE_SYS_SOCKET_H = true,
@@ -90,6 +96,9 @@ pub fn build(b: *std.Build) void {
     lib.root_module.addCMacro("OPENSSL_NO_BF", "1");
     lib.root_module.addCMacro("HAVE_CONFIG_H", "1");
     lib.root_module.addCMacro("LIBSSH2_OPENSSL", "1");
+    // openssl-zig disables ML-KEM in its provider build. Upstream libssh2
+    // otherwise enables it from the OpenSSL version and advertises unusable KEX.
+    lib.root_module.addCMacro("LIBSSH2_NO_MLKEM", "1");
     lib.addCSourceFiles(.{
         .files = libssh2_src,
         .root = upstream.path(""),

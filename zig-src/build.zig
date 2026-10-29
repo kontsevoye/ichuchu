@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const ndk = @import("src/ndk.zig");
+const mosh_shutdown_patch = @import("src/vendor/mosh/shutdown_patch.zig");
 
 const default_build_targets: []const std.Target.Query = &.{
     .{ .cpu_arch = .aarch64, .os_tag = .linux, .abi = .android, .android_api_level = 24 },
@@ -63,6 +64,20 @@ fn resolveNdkHome(b: *std.Build, ndk_root: []const u8) []const u8 {
     return ndk_root;
 }
 
+fn moshModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) *std.Build.Module {
+    const dep = b.dependency("mosh", .{ .target = target, .optimize = optimize });
+    const source = std.fs.cwd().readFileAlloc(b.allocator, dep.path("src/core.zig").getPath(b), 256 * 1024) catch @panic("Cannot read pinned Mosh core");
+    defer b.allocator.free(source);
+    const patched = mosh_shutdown_patch.apply(b.allocator, source) catch @panic("Pinned Mosh shutdown patch no longer applies; review upstream changes");
+    defer b.allocator.free(patched);
+    const files = b.addWriteFiles();
+    const directory = files.addCopyDirectory(dep.path("src"), "src", .{ .exclude_extensions = &.{"core.zig"} });
+    _ = files.add("src/core.zig", patched);
+    const module = dep.module("mosh");
+    module.root_source_file = directory.path(b, "root.zig");
+    return module;
+}
+
 fn buildNativeLibrary(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
@@ -77,10 +92,7 @@ fn buildNativeLibrary(
         .target = target,
         .optimize = optimize,
     });
-    const mosh_dep = b.dependency("mosh", .{
-        .target = target,
-        .optimize = optimize,
-    });
+    const mosh_module = moshModule(b, target, optimize);
 
     const ndk_root = b.graph.env_map.get("ANDROID_NDK_HOME") orelse b.graph.env_map.get("ANDROID_NDK_ROOT").?;
     const ndk_home = resolveNdkHome(b, ndk_root);
@@ -135,11 +147,14 @@ fn buildNativeLibrary(
         .omit_frame_pointer = true,
     });
     root_module.addIncludePath(b.path("src/bridge"));
+    root_module.addCSourceFiles(.{
+        .files = &.{"src/bridge/ichuchu_ssh_compat.c"},
+    });
     root_module.addIncludePath(libssh2_upstream.path("include"));
     root_module.addImport("ghostty-vt", ghostty_dep.module("ghostty-vt"));
     root_module.addImport("zigimg", zigimg_dep.module("zigimg"));
 
-    root_module.addImport("mosh", mosh_dep.module("mosh"));
+    root_module.addImport("mosh", mosh_module);
 
     const lib = b.addLibrary(.{
         .linkage = .dynamic,
@@ -173,10 +188,37 @@ fn buildNativeLibrary(
     return lib;
 }
 
+fn addMoshProtocolTests(b: *std.Build) void {
+    const host_target = b.resolveTargetQuery(.{});
+    const protocol_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = host_target,
+            .optimize = .Debug,
+            .link_libc = true,
+        }),
+    });
+    const protocol_mosh_module = moshModule(b, host_target, .Debug);
+    // Nix's macOS SDK omits zlib stubs; apply host-only search paths explicitly.
+    // Android JNI keeps its NDK headers and libraries.
+    if (b.graph.env_map.get("ICHUCHU_HOST_ZLIB_INCLUDE")) |path| {
+        protocol_mosh_module.addSystemIncludePath(.{ .cwd_relative = path });
+    }
+    if (b.graph.env_map.get("ICHUCHU_HOST_ZLIB_LIB")) |path| {
+        protocol_tests.root_module.addLibraryPath(.{ .cwd_relative = path });
+    }
+    protocol_tests.root_module.addImport("mosh", protocol_mosh_module);
+    protocol_tests.linkSystemLibrary("z");
+    const test_mosh_step = b.step("test-mosh", "Test Mosh shutdown and protocol handling");
+    test_mosh_step.dependOn(&b.addRunArtifact(protocol_tests).step);
+}
+
 pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
     const build_targets = resolveBuildTargets(b);
     const has_android_ndk = b.graph.env_map.get("ANDROID_NDK_HOME") != null or b.graph.env_map.get("ANDROID_NDK_ROOT") != null;
+
+    addMoshProtocolTests(b);
 
     const native_step = b.step("native", "Build native JNI library");
     const jni_step = b.step("jni", "Build native library and copy to jniLibs");

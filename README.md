@@ -71,7 +71,8 @@ Outputs are in `android/app/build/outputs/apk/`; release APKs are unsigned unles
 release signing is configured. `signed-release` prompts for credentials in a
 terminal and supports non-interactive CI secrets with `--non-interactive`.
 
-For an interactive shell, run `nix develop`, then `make apk` or `make release`. `make app` also installs and opens the debug build on a connected
+For an interactive shell, run `nix develop`, then `make apk`, `make release`, or
+`check-native`. `make app` also installs and opens the debug build on a connected
 device; set `ANDROID_SERIAL` when selecting a device.
 
 See [building and signing instructions](docs/building.md) for toolchain versions,

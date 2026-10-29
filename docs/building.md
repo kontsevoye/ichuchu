@@ -33,6 +33,7 @@ For interactive use:
 nix develop
 make apk          # rebuild native code and assemble debug APK
 make release      # rebuild native code and assemble release APK
+check-native      # native Mosh protocol/shutdown regressions
 cd android
 ./gradlew testDebugUnitTest
 ```

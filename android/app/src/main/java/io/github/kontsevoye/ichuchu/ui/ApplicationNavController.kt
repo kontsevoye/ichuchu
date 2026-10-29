@@ -2,18 +2,12 @@ package io.github.kontsevoye.ichuchu.ui
 
 import android.app.Application
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleEventObserver
-import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.navigation.NavHostController
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -29,6 +23,7 @@ import io.github.kontsevoye.ichuchu.ui.screens.Settings.SettingsBackupViewModel
 import io.github.kontsevoye.ichuchu.ui.screens.Settings.SettingsScreen
 import io.github.kontsevoye.ichuchu.ui.screens.Terminal.TerminalScreen
 import io.github.kontsevoye.ichuchu.ui.screens.Terminal.TerminalViewModel
+import io.github.kontsevoye.ichuchu.ui.security.AppLockGate
 import io.github.kontsevoye.ichuchu.ui.security.VerificationResult
 import io.github.kontsevoye.ichuchu.ui.security.requireUserVerification
 
@@ -37,27 +32,22 @@ fun ApplicationNavController() {
     val navController = rememberNavController()
     val context = LocalContext.current
     val application = context.applicationContext as Application
-    val lifecycleOwner = LocalLifecycleOwner.current
-    var appUnlocked by rememberSaveable { mutableStateOf(false) }
-    var unlockPromptRequested by rememberSaveable { mutableStateOf(false) }
-    var appLockBlockedUntilToggle by rememberSaveable { mutableStateOf(false) }
-
-    DisposableEffect(lifecycleOwner) {
-        val observer = LifecycleEventObserver { source, event ->
-            if (event == Lifecycle.Event.ON_STOP) {
-                val isConfigChange =
-                    (source as? android.app.Activity)?.isChangingConfigurations == true
-                if (!isConfigChange) {
-                    appUnlocked = false
-                    unlockPromptRequested = false
-                    appLockBlockedUntilToggle = false
-                }
-            }
-        }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    val settings = SettingsRepository.getInstance(application)
+    val lockEnabled by settings.appLockEnabled.collectAsStateWithLifecycle()
+    AppLockGate(
+        enabled = lockEnabled,
+        verify = { callback ->
+            requireUserVerification(context, "Unlock Ichuchu", "Authenticate to continue", callback)
+        },
+    ) {
+        ProtectedNavigation(navController)
     }
+}
 
+@Composable
+private fun ProtectedNavigation(navController: NavHostController) {
+    val context = LocalContext.current
+    val application = context.applicationContext as Application
     NavHost(navController = navController, startDestination = "servers") {
         composable("servers") {
             val vm: ServerListViewModel =
@@ -236,29 +226,4 @@ fun ApplicationNavController() {
         }
     }
 
-    val settingsRepo = SettingsRepository.getInstance(application)
-    val appLockEnabled by settingsRepo.appLockEnabled.collectAsStateWithLifecycle()
-    if (!appLockEnabled) {
-        appUnlocked = false
-        unlockPromptRequested = false
-        appLockBlockedUntilToggle = false
-    }
-    LaunchedEffect(appLockEnabled, appUnlocked, unlockPromptRequested, appLockBlockedUntilToggle) {
-        if (
-            appLockEnabled && !appUnlocked && !unlockPromptRequested && !appLockBlockedUntilToggle
-        ) {
-            unlockPromptRequested = true
-            requireUserVerification(
-                context = context,
-                title = "Unlock Ichuchu",
-                subtitle = "Authenticate to continue",
-            ) { result ->
-                appUnlocked = result == VerificationResult.Success
-                if (result != VerificationResult.Success) {
-                    appLockBlockedUntilToggle = true
-                }
-                unlockPromptRequested = false
-            }
-        }
-    }
 }

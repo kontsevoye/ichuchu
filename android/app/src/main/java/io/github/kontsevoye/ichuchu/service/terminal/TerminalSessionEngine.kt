@@ -57,6 +57,7 @@ data class SessionState(
     val reconnectAttempt: Int = 0,
     val error: String? = null,
     val handle: Long = 0,
+    val shellExited: Boolean = false,
 )
 
 data class HostKeyPrompt(
@@ -74,6 +75,7 @@ class TerminalSessionEngine(
     private val hostKeyStore: HostKeyStore,
     private val tailscaleStatusChecker: TailscaleStatusChecker,
 ) {
+    private data class MoshReadResult(val shellExited: Boolean, val failureCode: Int?)
     private data class ConnectionParams(
         val host: String,
         val port: Int,
@@ -195,6 +197,7 @@ class TerminalSessionEngine(
             _state.value =
                 _state.value.copy(
                     status = SessionStatus.Connecting,
+                    shellExited = false,
                     error = null,
                     reconnectAttempt = 0,
                     sessionKey = sessionKey,
@@ -660,12 +663,17 @@ class TerminalSessionEngine(
             scope.launch(dispatcher) {
                 val transport = lastConnectionParams?.transport
                 var failed = false
+                var shellExited = false
                 var moshFailureCode: Int? = null
                 try {
                     when (transport) {
-                        Transport.Mosh -> moshFailureCode = startMoshReadLoop()
+                        Transport.Mosh -> {
+                            val result = startMoshReadLoop()
+                            shellExited = result.shellExited
+                            moshFailureCode = result.failureCode
+                        }
                         Transport.LocalShell -> startLocalShellReadLoop()
-                        else -> startSshReadLoop()
+                        else -> shellExited = startSshReadLoop()
                     }
                 } catch (e: CancellationException) {
                     throw e
@@ -680,11 +688,22 @@ class TerminalSessionEngine(
                             )
                     }
                 }
-                when (readLoopExitAction(transport)) {
+                when (readLoopExitAction(transport, shellExited)) {
                     ReadLoopExitAction.Disconnect -> {
+                        if (shellExited) {
+                            nativeSsh.close()
+                            moshService.close()
+                        }
                         localShellService.close()
                         if (!disconnectRequested && !failed) {
-                            _state.value = _state.value.copy(status = SessionStatus.Disconnected)
+                            // EOF ends this shell; it is not a dropped connection to retry.
+                            disconnectRequested = true
+                            lastConnectionParams = null
+                            _state.value = _state.value.copy(
+                                status = SessionStatus.Disconnected,
+                                shellExited = true,
+                                error = null,
+                            )
                         }
                     }
                     ReadLoopExitAction.RequireManualReconnect -> {
@@ -703,15 +722,17 @@ class TerminalSessionEngine(
             }
     }
 
-    private suspend fun startSshReadLoop() {
+    private suspend fun startSshReadLoop(): Boolean {
         val buf = ByteArray(65536)
         var lastActivityMs = System.currentTimeMillis()
         while (currentCoroutineContext().isActive) {
             val chunk = nativeSsh.read(buf.size)
             if (chunk == null) {
-                break
+                return false
             }
             if (chunk.isEmpty()) {
+                // Drain the last output before treating channel EOF as a completed shell.
+                if (nativeSsh.isChannelEof()) return true
                 // Adaptive poll: stay snappy while data is flowing, back off when
                 // idle so a quiet session doesn't spin at 500 wakeups/sec.
                 delay(idleReadDelayMs(System.currentTimeMillis() - lastActivityMs))
@@ -720,6 +741,7 @@ class TerminalSessionEngine(
             lastActivityMs = System.currentTimeMillis()
             feedRemoteChunk(chunk)
         }
+        return false
     }
 
     private suspend fun startLocalShellReadLoop() {
@@ -754,11 +776,12 @@ class TerminalSessionEngine(
         }
     }
 
-    private suspend fun startMoshReadLoop(): Int? {
+    private suspend fun startMoshReadLoop(): MoshReadResult {
         Log.d("TerminalSession", "MOSH: read loop started")
         var loopCount = 0
         var lastActivityMs = System.currentTimeMillis()
         var failureCode: Int? = null
+        var shellExited = false
         while (currentCoroutineContext().isActive) {
             loopCount++
 
@@ -813,6 +836,10 @@ class TerminalSessionEngine(
             // Check session health
             val runtime = moshService.pollState()
             if (runtime != null) {
+                if (runtime.state == MoshState.Stopped.code) {
+                    shellExited = true
+                    break
+                }
                 if (runtime.state == MoshState.Failed.code) {
                     failureCode = runtime.lastFailureCode
                     Log.e("TerminalSession", "MOSH: session FAILED code=$failureCode")
@@ -825,7 +852,7 @@ class TerminalSessionEngine(
             delay(idleReadDelayMs(System.currentTimeMillis() - lastActivityMs))
         }
         Log.d("TerminalSession", "MOSH: read loop exited after $loopCount iterations")
-        return failureCode
+        return MoshReadResult(shellExited, failureCode)
     }
 
     private suspend fun establishConnection(params: ConnectionParams, username: String) {

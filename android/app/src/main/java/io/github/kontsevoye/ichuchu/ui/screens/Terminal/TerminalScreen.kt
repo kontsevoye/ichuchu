@@ -76,6 +76,7 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupProperties
 import androidx.core.content.FileProvider
+import io.github.kontsevoye.ichuchu.ui.screens.Files.stageRemoteFile
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -451,7 +452,6 @@ fun TerminalScreen(
     var showTabSheet by remember { mutableStateOf(false) }
     var showGlobalTabManager by remember { mutableStateOf(false) }
     var showNewTabPicker by remember { mutableStateOf(false) }
-    var hasSeenTabsForHost by remember(hostId, openLocalShell) { mutableStateOf(false) }
     var focusedTabIndex by remember { mutableStateOf(0) }
     var localShellFilesMessage by remember { mutableStateOf<String?>(null) }
     var terminalFontSizeSp by remember {
@@ -667,25 +667,12 @@ fun TerminalScreen(
         openPreparedTab(prepared.spec, false, false)
     }
 
-    // Strip mode: never auto-back from normal host-scoped empty state.
-    // Local-shell routes still close when their local tab is gone.
-    LaunchedEffect(hostId, hasTabsForHost, openLocalShell, tabMode) {
-        if (openLocalShell) {
-            if (hasTabsForHost) {
-                hasSeenTabsForHost = true
-            } else if (hasSeenTabsForHost) {
-                onBack()
-            }
-            return@LaunchedEffect
-        }
-        if (tabMode == TerminalTabMode.Strip) return@LaunchedEffect
-        if (hostId == null) return@LaunchedEffect
-        if (hasTabsForHost) {
-            hasSeenTabsForHost = true
-        } else if (hasSeenTabsForHost) {
-            onBack()
-        }
-    }
+    TerminalRouteExitEffect(
+        hostId = hostId,
+        openLocalShell = openLocalShell,
+        hasTabs = if (tabMode == TerminalTabMode.Strip && !openLocalShell) tabs.isNotEmpty() else hasTabsForHost,
+        onBack = onBack,
+    )
 
     LaunchedEffect(showTabSheet, tabsForHost, activeTabId) {
         if (!showTabSheet || tabsForHost.isEmpty()) return@LaunchedEffect
@@ -1270,10 +1257,9 @@ fun TerminalScreen(
                                     val tabId = activeTabId ?: return@FileBrowserScreen
                                     scope.launch(Dispatchers.IO) {
                                         runCatching {
-                                                val bytes = vm.readFile(tabId, entry, 32 * 1024 * 1024)
-                                                val safeName = entry.name.ifBlank { "remote_file" }
-                                                val outFile = File(context.cacheDir, safeName)
-                                                outFile.writeBytes(bytes)
+                                                val outFile = stageRemoteFile(context.cacheDir, entry.name) {
+                                                    vm.readFile(tabId, entry, 32 * 1024 * 1024)
+                                                }
                                                 val uri =
                                                     FileProvider.getUriForFile(
                                                         context,
@@ -1281,7 +1267,7 @@ fun TerminalScreen(
                                                         outFile,
                                                     )
                                                 val ext =
-                                                    safeName.substringAfterLast('.', "").lowercase()
+                                                    entry.name.substringAfterLast('.', "").lowercase()
                                                 val mime =
                                                     MimeTypeMap.getSingleton()
                                                         .getMimeTypeFromExtension(ext)

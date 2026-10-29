@@ -3,7 +3,7 @@ const std = @import("std");
 const c = @cImport({
     @cInclude("android/log.h");
     @cInclude("jni.h");
-    @cInclude("libssh2.h");
+    @cInclude("ichuchu_ssh_compat.h");
     @cInclude("libssh2_sftp.h");
     @cInclude("sys/socket.h");
     @cInclude("netdb.h");
@@ -564,7 +564,7 @@ export fn Java_io_github_kontsevoye_ichuchu_service_ssh_NativeSshBridge_nativeCo
     logInfo("Socket connected fd={}", .{fd});
     session.socket_fd = fd;
 
-    const ssh_session = c.libssh2_session_init_ex(null, null, null, null) orelse {
+    const ssh_session = c.ichuchu_ssh_session_init() orelse {
         setError(session, "libssh2_session_init_ex failed", .{});
         closeSocket(fd);
         session.socket_fd = -1;

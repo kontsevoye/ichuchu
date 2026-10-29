@@ -1,11 +1,12 @@
 .{
     .name = .libssh2,
-    .version = "1.11.1",
+    .version = "1.11.2-dev",
     .fingerprint = 0x57bdea04f02d2d28,
     .dependencies = .{
+        // Pinned upstream snapshot includes the transport/SFTP bounds fixes and later security fixes.
         .libssh2_upstream = .{
-            .url = "https://github.com/libssh2/libssh2/archive/refs/tags/libssh2-1.11.1.tar.gz",
-            .hash = "N-V-__8AAATRLQBu_rNy4X2UK6RtcdYK_yAzkV6OcCqgo5aK",
+            .url = "https://github.com/libssh2/libssh2/archive/94629f16bb313e522276b53a50f8d89c6eee81b0.tar.gz",
+            .hash = "N-V-__8AAP64LwDrKfDqyoGSCPI1_XiMtJy_s0JS8FIfvSZG",
         },
         .openssl = .{
             .url = "git+https://github.com/jossephus/openssl-zig#bc228fc66b51610129b65a6f4590e26b409048cb",

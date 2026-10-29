@@ -31,10 +31,10 @@ enum class MoshEventType(val code: Int) {
 
 enum class MoshState(val code: Int) {
     Idle(0),
-    Connecting(1),
-    Connected(2),
-    Reconnecting(3),
-    Disconnecting(4),
+    Starting(1),
+    Running(2),
+    Stopping(3),
+    Stopped(4),
     Failed(5),
 }
 

@@ -95,6 +95,18 @@ class TerminalViewModel(application: Application) : AndroidViewModel(application
     private val fileBrowserRefreshJobs = ConcurrentHashMap<String, Job>()
     private val fileBrowserResolverJobs = ConcurrentHashMap<String, Job>()
 
+    init {
+        viewModelScope.launch {
+            tabs.collect { openTabs ->
+                val liveIds = openTabs.map { it.id }.toSet()
+                // EOF can close a tab in the repository without going through closeTab().
+                val trackedIds = _connectionTabByTab.value.keys + _fileBrowserStateByTab.value.keys +
+                    fileHomeByTab.keys + fileBrowserRefreshJobs.keys + fileBrowserResolverJobs.keys
+                trackedIds.filterNot { it in liveIds }.forEach(::clearTabState)
+            }
+        }
+    }
+
     val selectedTab: StateFlow<ConnectionTab> =
         combine(activeTabId, _connectionTabByTab) { id, map ->
                 if (id == null) ConnectionTab.Terminal else map[id] ?: ConnectionTab.Terminal
@@ -420,12 +432,16 @@ class TerminalViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun closeTab(id: String) {
+        clearTabState(id)
+        sessionRepository.closeTab(id)
+    }
+
+    private fun clearTabState(id: String) {
         _connectionTabByTab.value = _connectionTabByTab.value - id
         _fileBrowserStateByTab.value = _fileBrowserStateByTab.value - id
         fileHomeByTab.remove(id)
         fileBrowserResolverJobs.remove(id)?.cancel()
         fileBrowserRefreshJobs.remove(id)?.cancel()
-        sessionRepository.closeTab(id)
     }
 
     fun reconnect() {

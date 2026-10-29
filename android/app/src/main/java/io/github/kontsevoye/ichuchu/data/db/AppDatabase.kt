@@ -48,8 +48,9 @@ abstract class AppDatabase : RoomDatabase() {
                 instance ?: Room.databaseBuilder(
                     context.applicationContext,
                     AppDatabase::class.java,
-                    "ichuchu.db",
+                    EncryptedDatabaseFactory.DATABASE_NAME,
                 )
+                    .openHelperFactory(EncryptedDatabaseFactory(context.applicationContext))
                     .build()
                     .also { instance = it }
             }

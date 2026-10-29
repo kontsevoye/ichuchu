@@ -11,7 +11,7 @@ in
   pkgs.devshell.mkShell {
     name = "ichuchu";
     motd = ''
-      Ichuchu: build-apk debug | release | signed-release
+      Ichuchu: build-apk debug | release | signed-release | check-native
     '';
     env = [
       {
@@ -77,6 +77,16 @@ in
         name = "build-apk";
         help = "Build debug, release, or signed-release (interactive or CI)";
         command = ''exec bash "$(git rev-parse --show-toplevel)/build-support/build-apk.sh" "$@"'';
+      }
+      {
+        name = "check-native";
+        help = "Run native Mosh protocol regressions";
+        command = ''
+          repo_root="$(git rev-parse --show-toplevel)"
+          export ZIG_GLOBAL_CACHE_DIR="''${ZIG_GLOBAL_CACHE_DIR:-$repo_root/.cache/zig}"
+          cd "$repo_root/zig-src"
+          exec zig build test-mosh "$@"
+        '';
       }
     ];
   }

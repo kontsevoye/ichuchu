@@ -12,6 +12,7 @@ local.properties
 .npm/
 .plans/
 .cache/
+__pycache__/
 .zig-cache/
 references/
 scripts/

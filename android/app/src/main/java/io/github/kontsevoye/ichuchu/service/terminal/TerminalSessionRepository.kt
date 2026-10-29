@@ -124,6 +124,9 @@ class TerminalSessionRepository private constructor(application: Application) {
                     }
                 }
                 .collect { pairs ->
+                    // Completed shells should not leave dead tabs, even while the UI is away.
+                    pairs.filter { (_, state) -> state.shellExited }
+                        .forEach { (tab, _) -> closeTab(tab.id) }
                     val anyAlive =
                         pairs.any { (_, state) ->
                             state.status == SessionStatus.Connecting ||

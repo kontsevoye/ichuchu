@@ -6,6 +6,16 @@ import org.junit.Test
 
 class ConnectionRecoveryPolicyTest {
     @Test
+    fun completedSshShellDoesNotReconnect() {
+        for (transport in listOf(Transport.SSH, Transport.TailscaleSSH)) {
+            assertEquals(
+                ReadLoopExitAction.Disconnect,
+                readLoopExitAction(transport, shellExited = true),
+            )
+        }
+    }
+
+    @Test
     fun moshFailureRequiresExplicitReconnect() {
         assertEquals(
             ReadLoopExitAction.RequireManualReconnect,
