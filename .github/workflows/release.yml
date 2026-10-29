@@ -1,81 +1,89 @@
+name: Check and release
+
 on:
   push:
-    tags:
-      - "v*.*.*"
+    branches: [main]
+  pull_request:
   workflow_dispatch:
-    inputs:
-      release_tag:
-        description: "Tag to publish (required for manual runs)"
-        required: false
-        type: string
 
-name: Release
+permissions:
+  contents: read
+
+# Queue pushes instead of discarding an intermediate release or racing for a version.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+  queue: max
 
 jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      skip: ${{ steps.version.outputs.skip }}
+      version-name: ${{ steps.version.outputs.version_name }}
+      version-code: ${{ steps.version.outputs.version_code }}
+      artifact-id: ${{ steps.bundle.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+      - name: Test release logic and lint automation
+        run: |
+          nix develop --no-update-lock-file --command node --test build-support/*.test.mjs
+          nix develop --no-update-lock-file --command shellcheck build-support/*.sh
+          nix develop --no-update-lock-file --command actionlint
+      - name: Plan release version
+        id: version
+        run: nix develop --no-update-lock-file --command node build-support/release.mjs --prepare .cache/release-plan.json
+      - name: Build and test unsigned APK and AAB
+        if: steps.version.outputs.skip != 'true'
+        env:
+          VERSION_NAME: ${{ steps.version.outputs.version_name }}
+          VERSION_CODE: ${{ steps.version.outputs.version_code }}
+        run: nix develop --no-update-lock-file --command bash build-support/check-android.sh
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        id: bundle
+        if: steps.version.outputs.skip != 'true'
+        with:
+          name: android-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            .cache/release-plan.json
+            android/app/build/outputs/apk/release/app-release-unsigned.apk
+            android/app/build/outputs/apk/release/output-metadata.json
+            android/app/build/outputs/bundle/release/app-release.aab
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+
   release:
+    needs: check
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.check.outputs.skip != 'true'
+    runs-on: ubuntu-latest
     permissions:
       contents: write
-      id-token: write
-    runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - uses: DeterminateSystems/nix-installer-action@main
-      - uses: DeterminateSystems/magic-nix-cache-action@main
-
-      - name: nix shell
-        run: nix develop --command true
-
-      - name: parse version from tag
-        id: version
-        if: ${{ github.ref_type == 'tag' || inputs.release_tag != '' }}
-        env:
-          RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || inputs.release_tag }}
-        run: |
-          set -e
-          TAG="$RELEASE_TAG"
-          VERSION="${TAG#v}"
-          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::Tag '$TAG' is not a valid semver (expected MAJOR.MINOR.PATCH, optionally prefixed with 'v')"
-            exit 1
-          fi
-          IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
-          for COMPONENT in "$MAJOR" "$MINOR" "$PATCH"; do
-            if [ "$COMPONENT" -gt 99 ]; then
-              echo "::error::Version component '$COMPONENT' exceeds 99 (MMmmpp scheme limit)"
-              exit 1
-            fi
-          done
-          {
-            echo "major=$MAJOR"
-            echo "minor=$MINOR"
-            echo "patch=$PATCH"
-            echo "version=$VERSION"
-          } >> "$GITHUB_OUTPUT"
-          echo "Parsed version: $VERSION (major=$MAJOR minor=$MINOR patch=$PATCH)"
-
-      - name: build android release artifacts (APK + AAB)
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          artifact-ids: ${{ needs.check.outputs.artifact-id }}
+          path: .
+          merge-multiple: true
+      - name: Sign and verify the checked artifacts
+        run: nix develop --no-update-lock-file --command build-apk signed-release --sign-only --non-interactive --bundle
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
-          VERSION_MAJOR: ${{ steps.version.outputs.major }}
-          VERSION_MINOR: ${{ steps.version.outputs.minor }}
-          VERSION_PATCH: ${{ steps.version.outputs.patch }}
-          ANDROID_ABI_FILTERS: arm64-v8a
-        run: nix develop --command build-apk signed-release --non-interactive --bundle
-
-      - name: upload release
-        if: ${{ github.ref_type == 'tag' || inputs.release_tag != '' }}
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.ref_type == 'tag' && github.ref_name || inputs.release_tag }}
-          target_commitish: ${{ github.sha }}
-          draft: true
-          files: |
-            ./android/app/build/outputs/apk/release/app-release.apk
-            ./android/app/build/outputs/bundle/release/app-release.aab
-          fail_on_unmatched_files: true
-
+          VERSION_NAME: ${{ needs.check.outputs.version-name }}
+          VERSION_CODE: ${{ needs.check.outputs.version-code }}
+      - name: Allocate SemVer tag and publish the signed artifacts
+        run: nix develop --no-update-lock-file --command node build-support/release.mjs --publish --plan .cache/release-plan.json
+        env:
+          GH_TOKEN: ${{ github.token }}

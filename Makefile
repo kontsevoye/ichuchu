@@ -1,4 +1,4 @@
-.PHONY: build app apk release signed-release
+.PHONY: build app apk release signed-release release-plan check-release
 
 build:
 	cd zig-src && zig build -Doptimize=ReleaseSmall -Dtarget=aarch64-linux-android.24 jni
@@ -22,3 +22,9 @@ fmt:
 lint:
 	ktlint --editorconfig=android/.editorconfig "android/app/src/**/*.kt" "android/**/*.gradle.kts"
 
+
+release-plan:
+	node build-support/release.mjs
+
+check-release:
+	node --test build-support/*.test.mjs

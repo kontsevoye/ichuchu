@@ -61,10 +61,15 @@ Subsequent builds reuse caches. `build-apk` defaults to `.cache/zig` and
 `.cache/gradle` inside the checkout, both excluded from Git. Existing
 `ZIG_GLOBAL_CACHE_DIR` and `GRADLE_USER_HOME` overrides are honored.
 
-For a versioned build, set the existing version environment variables:
+Versions normally come from committed Git history and stable tags through
+`build-support/version.mjs`, including direct Gradle builds. Node.js and Git are
+required; the Nix shell supplies both. Preview with `make release-plan`. See
+[release policy](releasing.md) for SemVer rules and Android encoding.
+
+For an explicit local version, set both environment variables together:
 
 ```sh
-VERSION_NAME=0.2.1-local VERSION_CODE=201006 nix develop --command build-apk release
+VERSION_NAME=0.1.1-local VERSION_CODE=1001001 nix develop --command build-apk release
 ```
 
 ## Signing a release
@@ -75,7 +80,7 @@ Keep the keystore outside the checkout. This single command rebuilds JNI,
 assembles a release, signs it and verifies the signature:
 
 ```sh
-VERSION_NAME=0.2.1-local VERSION_CODE=201006 \
+VERSION_NAME=0.1.1-local VERSION_CODE=1001001 \
   nix develop --command build-apk signed-release --interactive \
     --keystore "$HOME/.local/share/android-signing/ichuchu-release.jks"
 ```
@@ -97,8 +102,8 @@ available from inside `nix develop`.
     KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
     KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
     KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
-    VERSION_NAME: 0.2.2
-    VERSION_CODE: 202000
+    VERSION_NAME: 0.1.1
+    VERSION_CODE: 1001001
   run: nix develop --command build-apk signed-release --non-interactive
 ```
 
@@ -129,8 +134,12 @@ gh secret set KEYSTORE_PASSWORD --repo OWNER/REPO
 
 Base64 is an encoding, so keep its value in an Actions secret. See
 [GitHub's secret configuration documentation](https://docs.github.com/en/actions/how-tos/write-workflows/choose-what-workflows-do/use-secrets).
-The checked-in release and nightly workflows already use this signing command
-and publish only the explicit signed APK path, not an unsigned-APK glob.
+The checked-in [release workflow](../.github/workflows/release.yml) builds and tests
+unsigned APK/AAB files without signing secrets, then downloads the exact checked
+artifact into a separate signing job. `--sign-only --bundle` signs those existing
+files without compiling again; it requires the checked `VERSION_NAME` and
+`VERSION_CODE` and verifies the APK manifest against its build metadata.
+Only the verified signed files are published.
 
 ### Bundle and verification
 
@@ -160,11 +169,12 @@ separate from access to signing passwords.
 Run `nix develop --command python3 build-support/test-signing.py` for real
 JKS/PKCS12, APK/AAB, CI/password-file and interactive-PTY checks with disposable
 keys. Tests restore pre-existing signed outputs afterwards. Workflow syntax is
-checked with `actionlint .github/workflows/{release,nightly}.yml` inside the shell.
+checked with `actionlint` inside the shell. Release planning and draft recovery
+are checked with `make check-release`; its GitHub calls are simulated.
 
 ## Manual toolchain
 
-With Zig 0.15.2, JDK17 and the SDK/NDK versions above installed independently:
+With Node.js, Git, Zig 0.15.2, JDK17 and the SDK/NDK versions above installed independently:
 
 ```sh
 cd zig-src

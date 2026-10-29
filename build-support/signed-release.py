@@ -120,9 +120,21 @@ def sign_artifacts(args, path, alias, env, secrets, fingerprint, clean_env):
     metadata = json.loads((apk_dir / "output-metadata.json").read_text())
     if len(metadata["elements"]) != 1:
         raise SigningError("Expected exactly one release APK")
-    source = apk_dir / metadata["elements"][0]["outputFile"]
+    element = metadata["elements"][0]
+    expected_name, expected_code = clean_env.get("VERSION_NAME"), clean_env.get("VERSION_CODE")
+    if args.sign_only and (expected_name is None or expected_code is None):
+        raise SigningError("--sign-only requires VERSION_NAME and VERSION_CODE from the checked build plan")
+    if expected_name is not None and (element["versionName"] != expected_name or str(element["versionCode"]) != expected_code):
+        raise SigningError("APK metadata does not match VERSION_NAME/VERSION_CODE")
+    source = apk_dir / element["outputFile"]
+    aapt = str(Path(os.environ["ANDROID_HOME"]) / "build-tools/36.0.0/aapt2")
+    badging = tool([aapt, "dump", "badging", str(source)], clean_env, secrets).decode()
+    package = re.search(r"^package: name='([^']+)' versionCode='([^']+)' versionName='([^']+)'", badging, re.MULTILINE)
+    if not package or package.groups() != (metadata["applicationId"], str(element["versionCode"]), element["versionName"]):
+        raise SigningError("APK manifest does not match its build metadata")
     apksigner = str(Path(os.environ["ANDROID_HOME"]) / "build-tools/36.0.0/apksigner")
-    result = {"certificate_sha256": fingerprint, "version_code": metadata["elements"][0]["versionCode"]}
+    result = {"certificate_sha256": fingerprint, "version_code": metadata["elements"][0]["versionCode"],
+              "version_name": metadata["elements"][0]["versionName"]}
     with tempfile.TemporaryDirectory(prefix=".signing-", dir=apk_dir) as directory:
         apk = Path(directory) / "app-release.apk"
         tool([apksigner, "sign", "--ks", str(path), "--ks-key-alias", alias,
@@ -146,6 +158,7 @@ def sign_artifacts(args, path, alias, env, secrets, fingerprint, clean_env):
             verify_payload(bundle, signed_bundle)
             os.replace(signed_bundle, bundle)
             result["aab"] = str(bundle)
+            result["aab_sha256"] = hashlib.sha256(bundle.read_bytes()).hexdigest()
         destination = apk_dir / "app-release.apk"
         os.replace(apk, destination)
     result.update(apk=str(destination), sha256=hashlib.sha256(destination.read_bytes()).hexdigest())
@@ -162,6 +175,7 @@ def main():
     parser.add_argument("--keystore", help="Keystore path (or KEYSTORE_FILE)")
     parser.add_argument("--alias", help="Private key alias; auto-selects a single private key")
     parser.add_argument("--bundle", action="store_true", help="Also build, sign and verify the AAB")
+    parser.add_argument("--sign-only", action="store_true", help="Sign existing checked artifacts without rebuilding")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--interactive", action="store_true")
     mode.add_argument("--non-interactive", action="store_true")
@@ -178,7 +192,8 @@ def main():
         command = ["bash", str(ROOT / "build-support/build-apk.sh"), "release"]
         if args.bundle:
             command.append("--bundle")
-        subprocess.run(command, env=clean_env, check=True)
+        if not args.sign_only:
+            subprocess.run(command, env=clean_env, check=True)
         sign_artifacts(args, path, alias, env, secrets, fingerprint, clean_env)
 
 

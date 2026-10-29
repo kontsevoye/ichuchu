@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -24,12 +26,16 @@ android {
         minSdk = 24
         targetSdk = 36
 
-        val major = (System.getenv("VERSION_MAJOR")?.toIntOrNull() ?: 0)
-        val minor = (System.getenv("VERSION_MINOR")?.toIntOrNull() ?: 2)
-        val patch = (System.getenv("VERSION_PATCH")?.toIntOrNull() ?: 1)
-        val releaseBase = major * 10_000 + minor * 100 + patch
-        versionCode = System.getenv("VERSION_CODE")?.toIntOrNull() ?: (releaseBase * 1_000)
-        versionName = System.getenv("VERSION_NAME") ?: "$major.$minor.$patch"
+        val checkoutRoot = rootProject.projectDir.parentFile
+        val resolvedVersion = Properties().apply {
+            val output = providers.exec {
+                workingDir(checkoutRoot)
+                commandLine("node", "build-support/version.mjs", "--gradle")
+            }.standardOutput.asText.get()
+            load(output.reader())
+        }
+        versionCode = resolvedVersion.getProperty("versionCode").toInt()
+        versionName = resolvedVersion.getProperty("versionName")
 
         System.getenv("ANDROID_ABI_FILTERS")
             ?.split(',')

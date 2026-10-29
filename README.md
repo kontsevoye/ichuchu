@@ -41,8 +41,10 @@ ichuchu is independently maintained with additional security, build, and usabili
 
 Checkout our [releases](https://github.com/kontsevoye/ichuchu/releases) and download the APK from there.
 
-- **Stable:** the latest non-prerelease build
-- **Nightly:** every push to `main` publishes a rolling prerelease at the [`nightly`](https://github.com/kontsevoye/ichuchu/releases/tag/nightly) tag
+Each checked push to `main` automatically publishes a SemVer release with signed
+`ichuchu.apk` and `ichuchu.aab`. `feat:` increments minor, breaking changes increment
+major, and other changes increment patch. There is one stable release stream.
+See [versioning, release checks and recovery](docs/releasing.md).
 
 
 
@@ -65,7 +67,7 @@ nix develop --command build-apk release
 nix develop --command build-apk signed-release
 ```
 
-The checked-in flake and lock provide the SDK/NDK, JDK, and Zig. Both commands
+The checked-in flake and lock provide the SDK/NDK, JDK, and Zig. Build commands
 rebuild arm64 JNI and verify that the APK contains the newly built native library.
 Outputs are in `android/app/build/outputs/apk/`; release APKs are unsigned unless
 release signing is configured. `signed-release` prompts for credentials in a

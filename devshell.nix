@@ -62,6 +62,7 @@ in
       zigpkgs."0.15.2"
       git
       gnumake
+      gh
       python3
       unzip
       shellcheck

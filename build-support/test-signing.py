@@ -84,6 +84,21 @@ class SigningIntegration(unittest.TestCase):
         self.assertTrue(Path(self.check_signed()["aab"]).is_file())
         self.assertEqual(list(Path(self.env["RUNNER_TEMP"]).iterdir()), [])
 
+    def test_sign_only_uses_existing_checked_apk_without_running_gradle(self):
+        metadata = json.loads((ROOT / "android/app/build/outputs/apk/release/output-metadata.json").read_text())
+        element = metadata["elements"][0]
+        result = self.run_signing({"KEYSTORE_FILE": str(self.jks), "KEYSTORE_PASSWORD": STORE_PASSWORD,
+                                   "KEY_PASSWORD": KEY_PASSWORD, "VERSION_NAME": element["versionName"],
+                                   "VERSION_CODE": str(element["versionCode"])}, "--sign-only", "--bundle")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("Task :app:", result.stdout)
+        self.assertEqual(self.check_signed()["version_code"], element["versionCode"])
+        checked = subprocess.run(["node", "--input-type=module", "-e",
+                                  "import {prepareArtifacts, releasePlan} from './build-support/release.mjs'; "
+                                  "prepareArtifacts(releasePlan());"],
+                                 cwd=ROOT, env=self.env, capture_output=True, text=True)
+        self.assertEqual(checked.returncode, 0, checked.stderr)
+
     def test_password_files_support_distinct_jks_key_password(self):
         inputs = {"KEYSTORE_FILE": str(self.jks), "KEY_ALIAS": "synthetic-release"}
         for name, value in [("KEYSTORE_PASSWORD", STORE_PASSWORD), ("KEY_PASSWORD", KEY_PASSWORD)]:
