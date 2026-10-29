@@ -56,7 +56,15 @@ test "remote shutdown is acknowledged on the wire before stopping" {
     try std.testing.expectEqual(mosh.types.SessionState.stopped, client.state);
     try std.testing.expectEqual(mosh.types.FailureCode.none, client.last_failure);
     var buffer: [2048]u8 = undefined;
-    const received = (try receiver.receive(&buffer)) orelse return error.MissingShutdownAck;
+    // Local UDP delivery is asynchronous even after sendto returns. Bound the
+    // transport wait; the ACK payload and terminal state still have to match.
+    var received_size: ?usize = null;
+    for (0..100) |_| {
+        received_size = try receiver.receive(&buffer);
+        if (received_size != null) break;
+        std.Thread.sleep(1_000_000);
+    }
+    const received = received_size orelse return error.MissingShutdownAck;
     const body = buffer[mosh.wire.PacketEnvelope.bytes + mosh.wire.FragmentHeader.bytes .. received];
     const unpacked = try mosh.compress.decompressAuto(allocator, body);
     defer allocator.free(unpacked.data);
