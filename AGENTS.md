@@ -1,97 +1,72 @@
 # AGENTS.md
 
-## Zig Development
+## Project map
 
-Always use `zigdoc` to discover APIs for the Zig standard library and any third-party dependencies.
+- `android/app/src/main/java/io/github/kontsevoye/ichuchu/`: Kotlin/Compose app, storage, sessions, and updates.
+- `zig-src/src/bridge/`: JNI and native SSH, Mosh, backup, and terminal code.
+- `zig-src/src/vendor/`: dependency build adapters and the Mosh shutdown patch.
+- `build-support/`: APK building, signing, release planning, and acceptance helpers.
+- `docs/`: Nuxt site and maintained build, release, and updater documentation.
 
-Examples:
-```bash
-zigdoc std.fs
-zigdoc std.posix.getuid
-zigdoc ghostty-vt.Terminal
-zigdoc vaxis.Window
-```
+## Toolchain and checks
 
-## Common Zig Patterns
+Use the pinned Nix environment from the checkout root: `nix develop`. Toolchain
+versions and dependencies belong in `flake.lock`, `devshell.nix`, the Gradle
+catalog, and Zig manifests; use those files as the source of truth.
 
-These patterns reflect current Zig APIs and may differ from older documentation.
+Run the checks relevant to the change from inside that shell:
 
-**ArrayList:**
-```zig
-var list: std.ArrayList(u32) = .empty;
-defer list.deinit(allocator);
-try list.append(allocator, 42);
-```
+| Change | Check |
+| --- | --- |
+| Kotlin behavior | `cd android && ./gradlew :app:testDebugUnitTest` |
+| Kotlin formatting | `ktfmt --kotlinlang-style <changed .kt files>`; `make lint` |
+| Native Mosh protocol/shutdown | `check-native` |
+| JNI or native dependency integration | `build-apk debug` |
+| Release/version JavaScript | `make check-release` |
+| Build shell scripts or workflows | `shellcheck build-support/*.sh`; `actionlint` |
+| Nuxt site | `cd docs && pnpm install --frozen-lockfile && pnpm run generate` |
 
-**stdout/stderr Writer:**
-```zig
-var buf: [4096]u8 = undefined;
-const writer = std.fs.File.stdout().writer(&buf);
-defer writer.flush() catch {};
-try writer.print("hello {s}\n", .{"world"});
-```
+For build/signing changes, read `docs/building.md`. For versioning, release
+automation, or publication, read `docs/releasing.md`. For updater changes, read
+`docs/updating.md`. Use `build-support/check-android.sh` for the full native,
+JVM, debug, and release APK/AAB check sequence.
 
-**build.zig executable/test:**
-```zig
-b.addExecutable(.{
-    .name = "foo",
-    .root_module = b.createModule(.{
-        .root_source_file = b.path("src/main.zig"),
-        .target = target,
-        .optimize = optimize,
-    }),
-});
-```
+Android tests live in `android/app/src/test/` and `android/app/src/androidTest/`.
+Use a disposable emulator and explicit `adb -s <serial>` for device acceptance;
+keep emulator results separate from physical-device validation. The updater
+acceptance helper and SSH/Mosh fixture usage are documented in `docs/updating.md`
+and `android/test-fixtures/README.md`.
 
-## Zig Code Style
+## Zig conventions
 
-**Naming:**
-- `camelCase` for functions and methods
-- `snake_case` for variables and parameters
-- `PascalCase` for types, structs, and enums
-- `SCREAMING_SNAKE_CASE` for constants
+Use `zigdoc` to discover standard-library and dependency APIs for the pinned Zig
+and dependency versions. It is not supplied by the current devshell. If it is
+unavailable, inspect the pinned compiler's library and resolved dependency
+sources, and identify that fallback in the validation report. Avoid copying API
+examples from another Zig release.
 
-**Struct initialization:** Prefer explicit type annotation with anonymous literals:
-```zig
-const foo: Type = .{ .field = value };  // Good
-const foo = Type{ .field = value };     // Avoid
-```
+- Use `camelCase` functions, `snake_case` variables/parameters, `PascalCase` types, and `SCREAMING_SNAKE_CASE` constants.
+- Prefer explicit type annotations with anonymous struct literals.
+- Start modules with `//!`; order imports as `std`, `builtin`, then project modules.
+- Order methods as `init`, `deinit`, public API, then private helpers.
+- Pass allocators explicitly and use `errdefer` for cleanup on errors.
+- Use `///` for public APIs; explain non-obvious ownership, timing, and protocol decisions.
+- Assert meaningful boundary/state invariants. Keep functions near the existing 70-line soft limit.
+- Keep tests beside the code; register native regression modules in `zig-src/src/main.zig` and wire the relevant build step in `zig-src/build.zig`.
 
-**File structure:**
-1. `//!` doc comment describing the module
-2. `const Self = @This();` (for self-referential types)
-3. Imports: `std` → `builtin` → project modules
-4. `const log = std.log.scoped(.module_name);`
+For Kotlin, follow surrounding code and the repository formatter/editorconfig.
+Keep JNI declarations, exported native symbols, and Android package names in sync.
 
-**Functions:** Order methods as `init` → `deinit` → public API → private helpers
+## Local work and Git
 
-**Memory:** Pass allocators explicitly, use `errdefer` for cleanup on error
+Keep plans, scratch research, logs, and device evidence under ignored `.plans/`.
+Update `.plans/progress.txt` when a feature is fixed, completed, or materially
+advanced: update its task status and append a dated entry in the same change.
+This journal is local; never stage or force-add it or other ignored work files.
 
-**Documentation:** Use `///` for public API, `//` for implementation notes. Always explain *why*, not just *what*.
+Keep public, maintained instructions in `docs/`; link only to committed files.
+Local `.agents/` scripts are optional workstation/orb helpers, outside the build
+and CI workflow. They remain ignored and are not project setup instructions.
 
-**Tests:** Inline in the same file, register in src/main.zig test block
-
-## Safety Conventions
-
-Inspired by [TigerStyle](https://github.com/tigerbeetle/tigerbeetle/blob/main/docs/TIGER_STYLE.md).
-
-**Assertions:**
-- Add assertions that catch real bugs, not trivially true statements
-- Focus on API boundaries and state transitions where invariants matter
-- Good: bounds checks, null checks before dereference, state machine transitions
-- Avoid: asserting something immediately after setting it, checking internal function arguments
-
-**Function size:**
-- Soft limit of 70 lines per function
-- Centralize control flow (switch/if) in parent functions
-- Push pure computation to helper functions
-
-**Comments:**
-- Explain *why* the code exists, not *what* it does
-- Document non-obvious thresholds, timing values, protocol details
-
-## Progress Tracking
-
-- Keep `.plans/progress.txt` updated whenever a feature is fixed, completed, or materially advanced.
-- After each feature-level change, update the relevant phase/task status and append a dated progress log entry.
-- Do not defer progress updates; treat them as part of the same change.
+Before committing, inspect `git diff --cached --name-status` and confirm that
+only intended source, tests, configuration, and maintained documentation are staged.

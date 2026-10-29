@@ -4,9 +4,7 @@
 .externalNativeBuild
 .cxx
 local.properties
-.agents/*
-!.agents/setup
-!.agents/resume
+/.agents/
 .idea/
 .kotlin/
 .npm/
