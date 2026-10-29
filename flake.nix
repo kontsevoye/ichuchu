@@ -26,6 +26,7 @@
             devshell.overlays.default
             (final: prev: {
               zigpkgs = zig.packages.${system};
+              android-signing-sdk = android.sdk.${system} (sdkPkgs: [sdkPkgs.cmdline-tools-latest sdkPkgs.build-tools-36-0-0]);
               android-sdk = android.sdk.${system} (sdkPkgs:
                 with sdkPkgs; [
                   build-tools-35-0-0
@@ -43,7 +44,11 @@
           inherit (pkgs) android-sdk;
         };
 
-        devShells.default = import ./devshell.nix {inherit pkgs;};
+        devShells = {
+          default = import ./devshell.nix {inherit pkgs;};
+          signing = import ./devshell.nix {inherit pkgs; profile = "signing";};
+          frontend = import ./devshell.nix {inherit pkgs; profile = "frontend";};
+        };
         devShell = self.devShells.${system}.default;
       }
     );

@@ -1,4 +1,4 @@
-{pkgs}:
+{pkgs, profile ? "default"}:
 let
   inherit (pkgs) lib;
   sdk = "${pkgs.android-sdk}/share/android-sdk";
@@ -8,7 +8,24 @@ let
     exec ${pkgs.apple-sdk}/usr/bin/xcrun "$@"
   '';
 in
-  pkgs.devshell.mkShell {
+  if profile == "frontend" then pkgs.devshell.mkShell {
+    name = "ichuchu-frontend";
+    packages = with pkgs; [nodejs pnpm git];
+  } else if profile == "signing" then pkgs.devshell.mkShell {
+    name = "ichuchu-signing";
+    packages = with pkgs; [android-signing-sdk jdk17 python3 git nodejs gh];
+    env = [
+      { name = "ANDROID_HOME"; value = "${pkgs.android-signing-sdk}/share/android-sdk"; }
+      { name = "ANDROID_SDK_ROOT"; value = "${pkgs.android-signing-sdk}/share/android-sdk"; }
+      { name = "JAVA_HOME"; value = pkgs.jdk17.home; }
+      { name = "ICHUCHU_NIX_SHELL"; value = "1"; }
+    ];
+    commands = [{
+      name = "build-apk";
+      help = "Sign existing checked artifacts with signed-release --sign-only";
+      command = ''exec bash "$(git rev-parse --show-toplevel)/build-support/build-apk.sh" "$@"'';
+    }];
+  } else pkgs.devshell.mkShell {
     name = "ichuchu";
     motd = ''
       Ichuchu: build-apk debug | release | signed-release | check-native

@@ -19,6 +19,7 @@ scripts/
 .amp/portals/
 
 # Android
+/android/build/
 android/app/src/main/jniLibs/
 android/app/key.jks
 /build

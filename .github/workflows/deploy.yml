@@ -1,11 +1,23 @@
-name: Deploy
+name: Deploy frontend
 
 on:
   push:
     branches: [main]
     paths:
       - 'docs/**'
+      - '!docs/*.md'
+      - '.github/workflows/deploy.yml'
+      - 'flake.nix'
+      - 'flake.lock'
+      - 'devshell.nix'
   workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: frontend-pages
+  cancel-in-progress: true
 
 jobs:
   deploy:
@@ -15,20 +27,32 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install Nix
-        uses: cachix/install-nix-action@v31
-        with:
-          nix_path: nixpkgs=channel:nixos-unstable
+        uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
 
-      - name: Build docs
+      - name: Locate pnpm store
+        id: pnpm
+        run: |
+          store="$(nix develop .#frontend --no-update-lock-file --command pnpm store path --silent)"
+          printf 'store=%s\n' "$store" >> "$GITHUB_OUTPUT"
+
+      - name: Cache frontend dependencies
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.pnpm.outputs.store }}
+          key: frontend-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('flake.lock', 'docs/pnpm-lock.yaml') }}
+
+      - name: Build frontend
         env:
           NUXT_APP_BASE_URL: /ichuchu/
-        run: nix develop -c sh -c 'cd docs && pnpm install && pnpm run generate'
+        run: nix develop .#frontend --no-update-lock-file --command sh -c 'cd docs && pnpm install --frozen-lockfile && pnpm run generate'
 
       - name: Deploy to GitHub Pages
-        uses: peaceiris/actions-gh-pages@v4
+        uses: peaceiris/actions-gh-pages@84c30a85c19949d7eee79c4ff27748b70285e453 # v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_dir: ./docs/.output/public

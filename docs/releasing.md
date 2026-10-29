@@ -59,12 +59,17 @@ These overrides do not allocate release tags.
 
 1. A read-only check job runs release tests, ShellCheck and actionlint, then saves
    the release plan for the checked SHA.
-2. With that plan's version, the Nix shell runs native regressions, builds the
-   debug APK, runs JVM tests, and builds the unsigned release APK/AAB with R8/lint.
+2. With that plan's version, the Nix shell restores Gradle/Zig caches, runs native
+   regressions, builds JNI once and executes one Gradle graph for the debug APK,
+   fresh JVM tests and unsigned release APK/AAB with R8/lint. Both APKs must contain
+   the exact newly built JNI library. Successful main pushes save caches; PRs and
+   manual checks do not write them. Phase timings and Gradle profiles are retained
+   as a separate diagnostics artifact.
 3. The plan, unsigned APK, its build metadata and AAB are uploaded as one workflow
    artifact. The upload paths are explicit, including only the specific plan file
    from `.cache`.
-4. A separate job downloads that exact artifact and signs it with
+4. A separate job downloads that exact artifact and signs it in the lightweight
+   `nix develop .#signing` shell with
    `build-apk signed-release --sign-only --non-interactive --bundle`.
    No native or Gradle build runs with signing credentials in this mode. The APK
    manifest, metadata and planned version must agree; signatures, certificates

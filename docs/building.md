@@ -72,6 +72,35 @@ For an explicit local version, set both environment variables together:
 VERSION_NAME=0.1.1-local VERSION_CODE=1001001 nix develop --command build-apk release
 ```
 
+## CI build and caches
+
+`nix develop --command bash build-support/check-android.sh` runs native
+regressions, builds arm64 JNI once, and uses one Gradle task graph for debug APK,
+JVM tests, release APK and release AAB. The test task uses `--rerun`, so restored
+build outputs never replace an actual JVM test execution. Both APKs are checked
+against the newly built JNI bytes. Standalone `build-apk debug|release` commands
+still rebuild JNI through Zig's dependency graph before packaging.
+
+The release workflow restores Gradle caches/wrapper and Zig global/local caches.
+Keys include OS, architecture and pinned toolchain inputs, with a revision suffix
+and restore prefixes. Successful `main` push builds write caches; PRs and manual
+checks only restore them. Gradle task-output caching is enabled, while
+configuration caching remains disabled. Signing runs separately without these
+build caches and receives only the checked artifacts.
+
+Phase timings are recorded in `.cache/build-timings.tsv` and the Actions step
+summary. Gradle `--profile` HTML reports and timings are uploaded as the separate
+`build-diagnostics-*` artifact, including on failed builds when reports exist.
+Compare cache restore/save overhead and warm build timings before drawing a CI
+speedup conclusion from local results.
+
+Two smaller shells use the same `flake.lock`:
+
+- `nix develop .#signing` contains JDK17, Python, Android signing/build tools and
+  release publication tools. It omits the NDK and Zig; use it for
+  `build-apk signed-release --sign-only --non-interactive --bundle` after a build.
+- `nix develop .#frontend` contains Node.js, pnpm and Git for the Nuxt site.
+
 ## Signing a release
 
 ### Interactive terminal

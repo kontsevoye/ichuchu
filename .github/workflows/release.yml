@@ -18,6 +18,9 @@ concurrency:
 jobs:
   check:
     runs-on: ubuntu-latest
+    env:
+      GRADLE_USER_HOME: ${{ github.workspace }}/.cache/gradle
+      ZIG_GLOBAL_CACHE_DIR: ${{ github.workspace }}/.cache/zig
     outputs:
       skip: ${{ steps.version.outputs.skip }}
       version-name: ${{ steps.version.outputs.version_name }}
@@ -31,19 +34,73 @@ jobs:
       - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
       - name: Test release logic and lint automation
         run: |
-          nix develop --no-update-lock-file --command node --test build-support/*.test.mjs
-          nix develop --no-update-lock-file --command shellcheck build-support/*.sh
-          nix develop --no-update-lock-file --command actionlint
+          nix develop --no-update-lock-file --command bash -e <<'CHECKS'
+          node --test build-support/*.test.mjs
+          python3 build-support/test-build-pipeline.py
+          shellcheck build-support/*.sh
+          actionlint
+          CHECKS
       - name: Plan release version
         id: version
         run: nix develop --no-update-lock-file --command node build-support/release.mjs --prepare .cache/release-plan.json
+      - name: Restore Gradle cache
+        if: steps.version.outputs.skip != 'true'
+        id: gradle-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            .cache/gradle/caches
+            .cache/gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('flake.lock', 'android/gradle/wrapper/gradle-wrapper.properties', 'android/gradle/libs.versions.toml') }}-${{ github.sha }}
+          restore-keys: |
+            gradle-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('flake.lock', 'android/gradle/wrapper/gradle-wrapper.properties', 'android/gradle/libs.versions.toml') }}-
+            gradle-${{ runner.os }}-${{ runner.arch }}-
+      - name: Restore Zig cache
+        if: steps.version.outputs.skip != 'true'
+        id: zig-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            .cache/zig
+            zig-src/.zig-cache
+          key: zig-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('flake.lock', 'zig-src/**/build.zig.zon') }}-${{ github.sha }}
+          restore-keys: |
+            zig-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('flake.lock', 'zig-src/**/build.zig.zon') }}-
       - name: Build and test unsigned APK and AAB
+        id: build
         if: steps.version.outputs.skip != 'true'
         env:
           ORG_GRADLE_PROJECT_enableSelfUpdate: "true"
           VERSION_NAME: ${{ steps.version.outputs.version_name }}
           VERSION_CODE: ${{ steps.version.outputs.version_code }}
         run: nix develop --no-update-lock-file --command bash build-support/check-android.sh
+      - name: Save Gradle cache
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.version.outputs.skip != 'true' && steps.gradle-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            .cache/gradle/caches
+            .cache/gradle/wrapper
+          key: ${{ steps.gradle-cache.outputs.cache-primary-key }}
+      - name: Save Zig cache
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.version.outputs.skip != 'true' && steps.zig-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            .cache/zig
+            zig-src/.zig-cache
+          key: ${{ steps.zig-cache.outputs.cache-primary-key }}
+      - name: Upload build diagnostics
+        if: always() && steps.build.outcome != 'skipped'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: build-diagnostics-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            .cache/build-timings.tsv
+            android/build/reports/profile/
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         id: bundle
         if: steps.version.outputs.skip != 'true'
@@ -76,7 +133,7 @@ jobs:
           path: .
           merge-multiple: true
       - name: Sign and verify the checked artifacts
-        run: nix develop --no-update-lock-file --command build-apk signed-release --sign-only --non-interactive --bundle
+        run: nix develop .#signing --no-update-lock-file --command build-apk signed-release --sign-only --non-interactive --bundle
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
@@ -85,6 +142,6 @@ jobs:
           VERSION_NAME: ${{ needs.check.outputs.version-name }}
           VERSION_CODE: ${{ needs.check.outputs.version-code }}
       - name: Allocate SemVer tag and publish the signed artifacts
-        run: nix develop --no-update-lock-file --command node build-support/release.mjs --publish --plan .cache/release-plan.json
+        run: nix develop .#signing --no-update-lock-file --command node build-support/release.mjs --publish --plan .cache/release-plan.json
         env:
           GH_TOKEN: ${{ github.token }}
