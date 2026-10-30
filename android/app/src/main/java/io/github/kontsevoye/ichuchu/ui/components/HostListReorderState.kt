@@ -7,6 +7,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
@@ -20,6 +21,7 @@ import kotlinx.coroutines.isActive
 internal class HostListReorderState(
     private val listState: LazyListState,
     private val headerCount: Int,
+    private val onDragSwap: () -> Unit = {},
 ) {
     var hosts by mutableStateOf<List<HostProfile>>(emptyList())
         private set
@@ -145,6 +147,7 @@ internal class HostListReorderState(
             } ?: return
         val target = hosts.indexOfFirst { it.id == neighbour.key }
         hosts = hosts.toMutableList().apply { add(target, removeAt(index)) }
+        onDragSwap()
     }
 }
 
@@ -154,8 +157,13 @@ internal fun rememberHostListReorderState(
     listState: LazyListState,
     edge: Float,
     headerCount: Int,
+    onDragSwap: () -> Unit,
 ): HostListReorderState {
-    val state = remember(listState, headerCount) { HostListReorderState(listState, headerCount) }
+    val currentOnDragSwap by rememberUpdatedState(onDragSwap)
+    val state =
+        remember(listState, headerCount) {
+            HostListReorderState(listState, headerCount) { currentOnDragSwap() }
+        }
     LaunchedEffect(hosts) { state.sync(hosts) }
     LaunchedEffect(state.draggingId) {
         if (state.draggingId != null) {

@@ -106,7 +106,9 @@ fun ServerListScreen(
     val scope = rememberCoroutineScope()
     val edge = with(LocalDensity.current) { 64.dp.toPx() }
     val reorder =
-        rememberHostListReorderState(hosts, listState, edge, if (localShellEnabled) 1 else 0)
+        rememberHostListReorderState(hosts, listState, edge, if (localShellEnabled) 1 else 0) {
+            haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+        }
     val canReorder = searchQuery.isBlank() && hosts.size > 1 && !reorder.saving
 
     var selectedHostId by remember { mutableStateOf<Long?>(null) }

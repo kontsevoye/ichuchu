@@ -73,6 +73,24 @@ class ServerListInteractionTest {
                 )
             }
         }
+        compose.mainClock.autoAdvance = false
+        try {
+            compose.onNodeWithTag("host_reorder_1", useUnmergedTree = true).performTouchInput {
+                down(center)
+                advanceEventTime(650)
+                repeat(5) { moveBy(Offset(0f, 1f), delayMillis = 30) }
+            }
+            compose.mainClock.advanceTimeBy(1000)
+            compose.runOnIdle { assertEquals(listOf(HapticFeedbackType.LongPress), feedback) }
+            compose.onRoot().performTouchInput { cancel() }
+        } finally {
+            compose.mainClock.autoAdvance = true
+        }
+        compose.runOnIdle {
+            assertEquals(listOf(HapticFeedbackType.LongPress), feedback)
+            assertEquals(emptyList<Long>(), saved)
+            feedback.clear()
+        }
         compose.onNodeWithTag("host_reorder_1", useUnmergedTree = true).performTouchInput {
             down(center)
             advanceEventTime(650)
@@ -81,9 +99,14 @@ class ServerListInteractionTest {
         }
         compose.waitUntil(5000) { saved.isNotEmpty() }
         assertTrue("first host moved down: $saved", saved.indexOf(1) > 0)
-        assertEquals(listOf(HapticFeedbackType.LongPress), feedback)
+        assertEquals(
+            listOf(HapticFeedbackType.LongPress) +
+                List(saved.indexOf(1)) { HapticFeedbackType.TextHandleMove },
+            feedback,
+        )
         val orderAfterDown = saved
         saved = emptyList()
+        compose.runOnIdle { feedback.clear() }
         compose.onNodeWithTag("host_reorder_1", useUnmergedTree = true).performTouchInput {
             down(center)
             advanceEventTime(650)
@@ -92,17 +115,31 @@ class ServerListInteractionTest {
         }
         compose.waitUntil(5000) { saved.isNotEmpty() }
         assertTrue("first host moved back up: $saved", saved.indexOf(1) < orderAfterDown.indexOf(1))
-        assertEquals(List(2) { HapticFeedbackType.LongPress }, feedback)
+        assertEquals(
+            listOf(HapticFeedbackType.LongPress) +
+                List(orderAfterDown.indexOf(1) - saved.indexOf(1)) {
+                    HapticFeedbackType.TextHandleMove
+                },
+            feedback,
+        )
         val beforeCancel = hosts.value.map { it.id }
         saved = emptyList()
-        compose.onNodeWithTag("host_reorder_1", useUnmergedTree = true).performTouchInput {
-            down(center)
-            advanceEventTime(650)
-            repeat(10) { moveBy(Offset(0f, 15f), delayMillis = 30) }
-            cancel()
+        var beforeCancelFeedback = emptyList<HapticFeedbackType>()
+        compose.mainClock.autoAdvance = false
+        try {
+            compose.onNodeWithTag("host_reorder_1", useUnmergedTree = true).performTouchInput {
+                down(center)
+                advanceEventTime(650)
+                repeat(10) { moveBy(Offset(0f, 15f), delayMillis = 30) }
+            }
+            compose.mainClock.advanceTimeBy(1000)
+            compose.runOnIdle { beforeCancelFeedback = feedback.toList() }
+            compose.onRoot().performTouchInput { cancel() }
+        } finally {
+            compose.mainClock.autoAdvance = true
         }
         compose.runOnIdle {
-            assertEquals(List(3) { HapticFeedbackType.LongPress }, feedback)
+            assertEquals(beforeCancelFeedback, feedback)
             assertEquals(emptyList<Long>(), saved)
             assertEquals(beforeCancel, hosts.value.map { it.id })
             query.value = "fixture"
@@ -164,6 +201,11 @@ class ServerListInteractionTest {
         }
         compose.waitUntil(5000) { saved.isNotEmpty() }
         assertTrue("Auto scroll moves beyond the first screen: $saved", saved.indexOf(1) > 5)
+        assertEquals(
+            listOf(HapticFeedbackType.LongPress) +
+                List(saved.indexOf(1)) { HapticFeedbackType.TextHandleMove },
+            feedback,
+        )
     }
 
     @Test
