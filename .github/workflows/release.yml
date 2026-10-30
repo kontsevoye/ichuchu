@@ -10,6 +10,11 @@ on:
         description: Compare bounded Gradle heap/test-fork settings without publishing
         type: boolean
         default: false
+      comparison:
+        description: All candidates or only the two resource finalists
+        type: choice
+        options: [full, finalists]
+        default: full
       seed_cache:
         description: Seed only this manually selected ref's caches before benchmarking
         type: boolean
@@ -35,7 +40,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        tuning: ${{ fromJSON(inputs.benchmark && '["baseline","heap","parallel","workers","kapt"]' || '["default"]') }}
+        tuning: ${{ fromJSON(inputs.benchmark && (inputs.comparison == 'finalists' && '["heap","workers"]' || '["baseline","heap","parallel","workers","kapt"]') || '["default"]') }}
     env:
       GRADLE_USER_HOME: ${{ github.workspace }}/.cache/gradle
       ZIG_GLOBAL_CACHE_DIR: ${{ github.workspace }}/.cache/zig
@@ -64,6 +69,7 @@ jobs:
           nix develop .#ci --no-update-lock-file --command bash -e <<'CHECKS'
           node --test build-support/*.test.mjs
           python3 build-support/test-build-pipeline.py
+          python3 build-support/test-nix-fetcher-cache.py
           shellcheck build-support/*.sh
           actionlint
           CHECKS
@@ -80,6 +86,15 @@ jobs:
             .cache/gradle/caches/jars-9
             .cache/gradle/wrapper
           key: gradle-deps-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('flake.lock', 'android/gradle/wrapper/gradle-wrapper.properties', 'android/gradle/libs.versions.toml', 'android/**/*.gradle.kts') }}
+      - name: Migrate previous Gradle dependency cache
+        if: steps.gradle-deps.outputs.cache-hit != 'true'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            .cache/gradle/caches
+            .cache/gradle/wrapper
+          key: legacy-gradle-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}
+          restore-keys: gradle-${{ runner.os }}-${{ runner.arch }}-
       - name: Restore Gradle task outputs
         if: steps.version.outputs.skip != 'true'
         id: gradle-cache
@@ -97,6 +112,15 @@ jobs:
         with:
           path: .cache/zig/p
           key: zig-deps-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('flake.lock', 'zig-src/**/build.zig.zon') }}
+      - name: Migrate previous Zig dependency cache
+        if: steps.zig-deps.outputs.cache-hit != 'true'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            .cache/zig
+            zig-src/.zig-cache
+          key: legacy-zig-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}
+          restore-keys: zig-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('flake.lock', 'zig-src/**/build.zig.zon') }}-
       - name: Restore Zig task outputs
         if: steps.version.outputs.skip != 'true'
         id: zig-cache

@@ -74,6 +74,7 @@ def main():
     result = {
         'platform': platform.system(),
         'cpu_count': os.cpu_count(),
+        'cpu_model': next((line.split(':', 1)[1].strip() for line in Path('/proc/cpuinfo').read_text().splitlines() if line.startswith('model name')), 'unknown') if supported else None,
         'memory_total_bytes': (int(next(line.split()[1] for line in Path('/proc/meminfo').read_text().splitlines() if line.startswith('MemTotal:'))) * 1024) if supported else None,
         'elapsed_seconds': round(time.monotonic() - started, 3),
         'exit_code': child.returncode,

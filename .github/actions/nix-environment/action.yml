@@ -26,17 +26,27 @@ runs:
         TOOLCHAIN_HASH: ${{ hashFiles('flake.lock', 'flake.nix', 'devshell.nix') }}
       run: |
         [[ "$PROFILE" == ci || "$PROFILE" == signing ]] || exit 2
+        python3 build-support/nix-fetcher-cache.py validate
         version="$(nix --version | sha256sum | cut -d' ' -f1)"
-        printf 'key=nix-v2-%s-%s-%s-%s-%s\n' "$RUNNER_OS" "$RUNNER_ARCH" "$version" "$PROFILE" "$TOOLCHAIN_HASH" >> "$GITHUB_OUTPUT"
-        printf 'legacy-key=nix-v1-%s-%s-%s-%s-%s\n' "$RUNNER_OS" "$RUNNER_ARCH" "$version" "$PROFILE" "$TOOLCHAIN_HASH" >> "$GITHUB_OUTPUT"
+        printf 'key=nix-v3-%s-%s-%s-%s-%s\n' "$RUNNER_OS" "$RUNNER_ARCH" "$version" "$PROFILE" "$TOOLCHAIN_HASH" >> "$GITHUB_OUTPUT"
+        printf 'legacy-key=nix-v2-%s-%s-%s-%s-%s\n' "$RUNNER_OS" "$RUNNER_ARCH" "$version" "$PROFILE" "$TOOLCHAIN_HASH" >> "$GITHUB_OUTPUT"
     - name: Restore Nix toolchain
       id: cache
       if: inputs.use-cache == 'true'
       uses: nix-community/cache-nix-action/restore@7df957e333c1e5da7721f60227dbba6d06080569 # v7
       with:
         primary-key: ${{ steps.identity.outputs.key }}
-        # One strict format migration; OS, Nix version, profile and toolchain must all match.
-        restore-prefixes-first-match: ${{ steps.identity.outputs.legacy-key }}
+        paths: |
+          ~/.cache/nix/tarball-cache-v2
+          .cache/nix-public-fetcher.json
+    - name: Restore exact previous store-only format
+      if: inputs.use-cache == 'true' && steps.cache.outputs.hit-primary-key != 'true'
+      uses: nix-community/cache-nix-action/restore@7df957e333c1e5da7721f60227dbba6d06080569 # v7
+      with:
+        primary-key: ${{ steps.identity.outputs.legacy-key }}
+    - name: Restore audited public fetcher metadata
+      shell: bash
+      run: python3 build-support/nix-fetcher-cache.py import --database "$HOME/.cache/nix/fetcher-cache-v4.sqlite" --bundle .cache/nix-public-fetcher.json
     - name: Realize and retain environment
       shell: bash
       env:
@@ -47,10 +57,14 @@ runs:
         nix develop ".#$PROFILE" --profile ".cache/nix-$PROFILE" --no-update-lock-file --command true
         printf '%s\t%s\n' "$PROFILE" "$((SECONDS - started))" > ".cache/nix-$PROFILE-timings.tsv"
         nix path-info --json --closure-size "$(readlink -f ".cache/nix-$PROFILE")" > ".cache/nix-$PROFILE-closure.json"
+        python3 build-support/nix-fetcher-cache.py export --database "$HOME/.cache/nix/fetcher-cache-v4.sqlite" --bundle .cache/nix-public-fetcher.json
     - name: Save Nix toolchain before credentials
       if: inputs.use-cache == 'true' && inputs.write-cache == 'true' && steps.cache.outputs.hit-primary-key != 'true'
       uses: nix-community/cache-nix-action/save@7df957e333c1e5da7721f60227dbba6d06080569 # v7
       with:
         primary-key: ${{ steps.identity.outputs.key }}
+        paths: |
+          ~/.cache/nix/tarball-cache-v2
+          .cache/nix-public-fetcher.json
         gc-max-store-size-linux: 0
         purge: false
