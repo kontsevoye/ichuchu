@@ -62,14 +62,15 @@ These overrides do not allocate release tags.
 2. With that plan's version, the Nix shell restores Gradle/Zig caches, runs native
    regressions, builds JNI once and executes one Gradle graph for the debug APK,
    fresh JVM tests and unsigned release APK/AAB with R8/lint. Both APKs must contain
-   the exact newly built JNI library. Successful main pushes save caches; PRs and
-   manual checks do not write them. Phase timings and Gradle profiles are retained
+   the exact newly built JNI library. Successful main pushes save caches; PRs only
+   restore them. An explicit manual `seed_cache` run may seed the selected ref's
+   cache scope without publishing. Phase timings and Gradle profiles are retained
    as a separate diagnostics artifact.
 3. The plan, unsigned APK, its build metadata and AAB are uploaded as one workflow
    artifact. The upload paths are explicit, including only the specific plan file
    from `.cache`.
 4. A separate job downloads that exact artifact and signs it in the lightweight
-   `nix develop .#signing` shell with
+   cached `signing` development profile (realized from `nix develop .#signing`) with
    `build-apk signed-release --sign-only --non-interactive --bundle`.
    No native or Gradle build runs with signing credentials in this mode. The APK
    manifest, metadata and planned version must agree; signatures, certificates

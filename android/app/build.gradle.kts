@@ -5,20 +5,19 @@ plugins {
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.kotlin.serialization)
-    id("kotlin-kapt")
+    alias(libs.plugins.kotlin.ksp)
+}
+
+ksp {
+    arg("room.schemaLocation", "$projectDir/schemas")
+    arg("room.incremental", "true")
+    arg("room.generateKotlin", "false")
 }
 
 android {
     namespace = "io.github.kontsevoye.ichuchu"
     compileSdk {
         version = release(36)
-    }
-
-    kapt {
-        arguments {
-            arg("room.schemaLocation", "$projectDir/schemas")
-            arg("room.incremental", "true")
-        }
     }
 
     defaultConfig {
@@ -109,6 +108,9 @@ android {
             // Robolectric needs the merged resources to resolve app resources in tests.
             isIncludeAndroidResources = true
             all { test ->
+                test.maxParallelForks = providers.gradleProperty("testForks").orElse("1").get().toInt().also {
+                    require(it in 1..4) { "testForks must be between 1 and 4" }
+                }
                 // Roborazzi gates PNG capture on this system property; the Gradle
                 // plugin usually wires it, but we pass it through manually so
                 // `-Proborazzi.test.record=true` works with plain test tasks.
@@ -137,7 +139,7 @@ dependencies {
     implementation(libs.sqlcipher)
     implementation(libs.room.runtime)
     implementation(libs.room.ktx)
-    kapt(libs.room.compiler)
+    ksp(libs.room.compiler)
     implementation(libs.navigation.compose)
     implementation(libs.kotlinx.serialization.json)
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")

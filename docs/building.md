@@ -74,28 +74,74 @@ VERSION_NAME=0.1.1-local VERSION_CODE=1001001 nix develop --command build-apk re
 
 ## CI build and caches
 
-`nix develop --command bash build-support/check-android.sh` runs native
+`nix develop .#ci --command bash build-support/check-android.sh` runs native
 regressions, builds arm64 JNI once, and uses one Gradle task graph for debug APK,
 JVM tests, release APK and release AAB. The test task uses `--rerun`, so restored
 build outputs never replace an actual JVM test execution. Both APKs are checked
 against the newly built JNI bytes. Standalone `build-apk debug|release` commands
 still rebuild JNI through Zig's dependency graph before packaging.
 
-The release workflow restores Gradle caches/wrapper and Zig global/local caches.
-Keys include OS, architecture and pinned toolchain inputs, with a revision suffix
-and restore prefixes. Successful `main` push builds write caches; PRs and manual
-checks only restore them. Gradle task-output caching is enabled, while
-configuration caching remains disabled. Signing runs separately without these
-build caches and receives only the checked artifacts.
+The release workflow uses a smaller pinned `ci` shell without frontend tools or
+Kotlin formatters. Room generation uses KSP2 pinned alongside Kotlin in the Gradle
+version catalog; the exported Room schema is unchanged by that tool migration.
 
-Phase timings are recorded in `.cache/build-timings.tsv` and the Actions step
-summary. Gradle `--profile` HTML reports and timings are uploaded as the separate
-`build-diagnostics-*` artifact, including on failed builds when reports exist.
-Compare cache restore/save overhead and warm build timings before drawing a CI
-speedup conclusion from local results.
+Nix environments use exact OS/architecture/Nix-version/profile/toolchain keys.
+The environment is retained as a GC root; unreachable store paths are collected
+before its Nix store snapshot is saved. The save runs explicitly before any
+signing secrets enter the job. Signing has its own profile
+and job. Its recorded development profile is cached with its store closure and
+loaded with `nix print-dev-env` by `build-support/run-ci-environment.sh`. This
+official interface avoids the separate registry lookup for interactive Bash that
+`nix develop` performs for a stored profile. This avoids reevaluating/downloading flake inputs on a warm
+hit; a miss realizes the locked checkout first. The profile key includes all Nix
+configuration files, the actual Nix version, platform and profile name. Workspace
+cache ownership is repaired without dereferencing links into the Nix store. The
+snapshot retains the live profile closure; its size is reported in diagnostics.
 
-Two smaller shells use the same `flake.lock`:
+Gradle dependencies, transforms and wrapper are cached once per pinned dependency
+configuration; its task-output cache uses revision keys. Zig package sources are
+also separate from compiler outputs. This keeps source-only pushes from uploading
+another copy of the entire dependency cache. Main pushes write caches; PRs only
+restore them. An explicit manual `seed_cache` run may populate only the selected
+ref's cache scope. No post-signing Nix cache save runs. Configuration caching
+remains disabled and actual JVM tests still execute on a cache hit.
 
+On the 4-vCPU Ubuntu runner, CI uses a 4096-MiB Gradle heap, two Gradle workers
+and one JVM test fork. A repeated forced-execution comparison on the same CPU
+model took 274 seconds with two workers versus 286 seconds with four, with lower
+sampled process-tree RSS. These are individual hosted measurements, not a timing
+guarantee; compare future runs using the retained diagnostics.
+
+Phase timings, Gradle `--profile` reports, sampled process-tree CPU/RSS/thread
+counters and GC logs are uploaded as `build-diagnostics-*`, including on failure.
+The sampler reads numeric process counters, never arguments or environment
+values. Process sampling can miss short-lived processes; aggregate task durations
+can overlap and must not be summed as wall time.
+
+The **Check and release** workflow supports read-only benchmark dispatches:
+
+```sh
+# Optional first run seeds caches in this branch's own GitHub cache scope.
+gh workflow run release.yml --ref YOUR_BRANCH -f seed_cache=true
+# Compare heap/workers/test forks and a kapt processor control on one commit.
+gh workflow run release.yml --ref YOUR_BRANCH -f benchmark=true
+# Repeat just the heap/worker finalists.
+gh workflow run release.yml --ref YOUR_BRANCH -f benchmark=true -f comparison=finalists
+# Disable Nix caching for a cold environment comparison.
+gh workflow run release.yml --ref YOUR_BRANCH -f benchmark=true -f nix_cache=false
+```
+
+The kapt control rewrites only the manual benchmark checkout and is guarded against
+production invocation; its APK/AAB are never published. Benchmark variants force
+task execution and disable task-output caching so R8/lint execution is compared
+with actual work. They never save caches or publish. Normal
+manual runs cannot publish either. Use repeated hosted runs with the same commit
+and restored dependency snapshot before changing production heap/fork settings;
+include environment/cache transfer time when evaluating overall savings.
+
+Three smaller shells use the same `flake.lock`:
+
+- `nix develop .#ci` contains the pinned Android/JNI/JVM/check toolchain.
 - `nix develop .#signing` contains JDK17, Python, Android signing/build tools and
   release publication tools. It omits the NDK and Zig; use it for
   `build-apk signed-release --sign-only --non-interactive --bundle` after a build.

@@ -46,10 +46,12 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.contentDescription
@@ -93,6 +95,7 @@ fun ServerListScreen(
     onReorderHosts: suspend (List<Long>) -> Boolean = { false },
 ) {
     val context = LocalContext.current
+    val haptics = LocalHapticFeedback.current
     val application = context.applicationContext as Application
     val sessionRepo = remember(application) { TerminalSessionRepository.getInstance(application) }
     val connectedHostIds by sessionRepo.connectedHostIds.collectAsStateWithLifecycle()
@@ -295,6 +298,11 @@ fun ServerListScreen(
                                                         if (longPress != null) {
                                                             selectedHostId = null
                                                             reorder.start(host.id)
+                                                            if (reorder.draggingId == host.id) {
+                                                                haptics.performHapticFeedback(
+                                                                    HapticFeedbackType.LongPress
+                                                                )
+                                                            }
                                                             val dropped =
                                                                 drag(longPress.id) { change ->
                                                                     reorder.drag(
@@ -333,7 +341,10 @@ fun ServerListScreen(
                                 },
                             isConnected = isConnected,
                             isSelected = selectedHostId == host.id,
-                            onLongPress = { selectedHostId = host.id },
+                            onLongPress = {
+                                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                selectedHostId = host.id
+                            },
                             onCancelSelection = { selectedHostId = null },
                             onDeleteSelection = {
                                 val is_selected_connected = host.id in connectedHostIds

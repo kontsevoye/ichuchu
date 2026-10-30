@@ -26,7 +26,7 @@ in
       command = ''exec bash "$(git rev-parse --show-toplevel)/build-support/build-apk.sh" "$@"'';
     }];
   } else pkgs.devshell.mkShell {
-    name = "ichuchu";
+    name = if profile == "ci" then "ichuchu-ci" else "ichuchu";
     motd = ''
       Ichuchu: build-apk debug | release | signed-release | check-native
     '';
@@ -79,17 +79,14 @@ in
       zigpkgs."0.15.2"
       git
       gnumake
-      gh
       python3
       unzip
       shellcheck
       actionlint
       zlib
-      ktfmt
-      ktlint
       nodejs
-      pnpm
-    ]) ++ lib.optionals pkgs.stdenv.isDarwin [darwinSdkTools];
+    ]) ++ lib.optionals (profile != "ci") (with pkgs; [gh ktfmt ktlint pnpm])
+       ++ lib.optionals pkgs.stdenv.isDarwin [darwinSdkTools];
     commands = [
       {
         name = "build-apk";

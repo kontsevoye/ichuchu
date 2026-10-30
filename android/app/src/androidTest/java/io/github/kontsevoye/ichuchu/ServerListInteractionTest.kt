@@ -1,9 +1,16 @@
 package io.github.kontsevoye.ichuchu
 
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.hapticfeedback.HapticFeedback
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performTouchInput
 import io.github.kontsevoye.ichuchu.model.HostProfile
@@ -16,6 +23,18 @@ import org.junit.Test
 
 class ServerListInteractionTest {
     @get:Rule val compose = createComposeRule()
+    private val feedback = mutableListOf<HapticFeedbackType>()
+    private val haptics =
+        object : HapticFeedback {
+            override fun performHapticFeedback(hapticFeedbackType: HapticFeedbackType) {
+                feedback += hapticFeedbackType
+            }
+        }
+
+    @Composable
+    private fun WithRecordedHaptics(content: @Composable () -> Unit) {
+        CompositionLocalProvider(LocalHapticFeedback provides haptics) { IchuTheme { content() } }
+    }
 
     @Test
     fun dragReordersBothWaysAndFilterDisablesDrag() {
@@ -33,7 +52,7 @@ class ServerListInteractionTest {
         val query = mutableStateOf("")
         var saved = emptyList<Long>()
         compose.setContent {
-            IchuTheme {
+            WithRecordedHaptics {
                 ServerListScreen(
                     hosts = hosts.value,
                     searchQuery = query.value,
@@ -62,6 +81,7 @@ class ServerListInteractionTest {
         }
         compose.waitUntil(5000) { saved.isNotEmpty() }
         assertTrue("first host moved down: $saved", saved.indexOf(1) > 0)
+        assertEquals(listOf(HapticFeedbackType.LongPress), feedback)
         val orderAfterDown = saved
         saved = emptyList()
         compose.onNodeWithTag("host_reorder_1", useUnmergedTree = true).performTouchInput {
@@ -72,6 +92,7 @@ class ServerListInteractionTest {
         }
         compose.waitUntil(5000) { saved.isNotEmpty() }
         assertTrue("first host moved back up: $saved", saved.indexOf(1) < orderAfterDown.indexOf(1))
+        assertEquals(List(2) { HapticFeedbackType.LongPress }, feedback)
         val beforeCancel = hosts.value.map { it.id }
         saved = emptyList()
         compose.onNodeWithTag("host_reorder_1", useUnmergedTree = true).performTouchInput {
@@ -81,6 +102,7 @@ class ServerListInteractionTest {
             cancel()
         }
         compose.runOnIdle {
+            assertEquals(List(3) { HapticFeedbackType.LongPress }, feedback)
             assertEquals(emptyList<Long>(), saved)
             assertEquals(beforeCancel, hosts.value.map { it.id })
             query.value = "fixture"
@@ -103,7 +125,7 @@ class ServerListInteractionTest {
             )
         var saved = emptyList<Long>()
         compose.setContent {
-            IchuTheme {
+            WithRecordedHaptics {
                 ServerListScreen(
                     hosts = hosts.value,
                     searchQuery = "",
@@ -142,5 +164,36 @@ class ServerListInteractionTest {
         }
         compose.waitUntil(5000) { saved.isNotEmpty() }
         assertTrue("Auto scroll moves beyond the first screen: $saved", saved.indexOf(1) > 5)
+    }
+
+    @Test
+    fun holdingHostSelectsItWithOneHaptic() {
+        compose.setContent {
+            WithRecordedHaptics {
+                ServerListScreen(
+                    hosts =
+                        listOf(
+                            HostProfile(
+                                id = 1,
+                                name = "Host",
+                                host = "fixture",
+                                username = "fixture",
+                            )
+                        ),
+                    searchQuery = "",
+                    onSearchChange = {},
+                    onAddServer = {},
+                    localShellEnabled = false,
+                    onOpenLocalShell = {},
+                    onEditServer = {},
+                    onConnectServer = {},
+                    onDeleteServer = {},
+                    onOpenSettings = {},
+                )
+            }
+        }
+        compose.onNodeWithTag("host_card_1").performTouchInput { longClick() }
+        compose.onNodeWithText("delete").assertExists()
+        compose.runOnIdle { assertEquals(listOf(HapticFeedbackType.LongPress), feedback) }
     }
 }
