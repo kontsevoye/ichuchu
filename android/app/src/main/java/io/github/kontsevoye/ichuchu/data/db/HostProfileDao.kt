@@ -13,13 +13,13 @@ import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface HostProfileDao {
-    @Query("SELECT * FROM host_profiles ORDER BY name")
+    @Query("SELECT * FROM host_profiles ORDER BY sortOrder, id")
     fun observeAll(): Flow<List<HostProfile>>
 
     @Query("SELECT * FROM host_profiles WHERE id = :id")
     suspend fun getById(id: Long): HostProfile?
 
-    @Query("SELECT * FROM host_profiles ORDER BY name")
+    @Query("SELECT * FROM host_profiles ORDER BY sortOrder, id")
     suspend fun getAll(): List<HostProfile>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
@@ -43,7 +43,30 @@ interface HostProfileDao {
                     profiles.map { if (it.id == profile.id) profile else it },
                 )
             }
-        return insert(profile)
+        // An editor opened before a drag must not restore the old position.
+        val position = profiles.firstOrNull { it.id == profile.id }?.sortOrder ?: nextSortOrder()
+        return insert(profile.copy(sortOrder = position))
+    }
+
+    @Query("SELECT COALESCE(MAX(sortOrder), -1) + 1 FROM host_profiles")
+    suspend fun nextSortOrder(): Long
+
+    @Transaction
+    suspend fun appendForImport(profile: HostProfile): Long =
+        insertForImport(profile.copy(sortOrder = nextSortOrder()))
+
+    @Query("UPDATE host_profiles SET sortOrder = :position WHERE id = :id")
+    suspend fun setSortOrder(id: Long, position: Long)
+
+    /** Save one complete order atomically; concurrent additions remain at the end. */
+    @Transaction
+    suspend fun reorder(ids: List<Long>) {
+        require(ids.distinct().size == ids.size) { "Duplicate host in order" }
+        val currentIds = getAll().map { it.id }
+        val currentSet = currentIds.toSet()
+        val requestedSet = ids.toSet()
+        val ordered = ids.filter { it in currentSet } + currentIds.filter { it !in requestedSet }
+        ordered.forEachIndexed { index, id -> setSortOrder(id, index.toLong()) }
     }
 
     @Transaction

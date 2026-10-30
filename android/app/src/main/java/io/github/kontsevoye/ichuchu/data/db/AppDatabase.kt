@@ -9,12 +9,13 @@ import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.TypeConverters
 import androidx.room.migration.AutoMigrationSpec
+import androidx.sqlite.db.SupportSQLiteDatabase
 import io.github.kontsevoye.ichuchu.model.HostProfile
 import io.github.kontsevoye.ichuchu.model.SshKey
 
 @Database(
     entities = [HostProfile::class, SshKey::class],
-    version = 12,
+    version = 13,
     autoMigrations =
         [
             AutoMigration(from = 5, to = 6),
@@ -24,6 +25,7 @@ import io.github.kontsevoye.ichuchu.model.SshKey
             AutoMigration(from = 9, to = 10, spec = AppDatabase.Migration9To10::class),
             AutoMigration(from = 10, to = 11),
             AutoMigration(from = 11, to = 12),
+            AutoMigration(from = 12, to = 13, spec = AppDatabase.Migration12To13::class),
         ],
 )
 @TypeConverters(Converters::class)
@@ -42,19 +44,28 @@ abstract class AppDatabase : RoomDatabase() {
     )
     class Migration9To10 : AutoMigrationSpec
 
-    companion object {
-        @Volatile
-        private var instance: AppDatabase? = null
+    class Migration12To13 : AutoMigrationSpec {
+        override fun onPostMigrate(db: SupportSQLiteDatabase) {
+            // Legacy profiles have no timestamp; autoincrement IDs retain creation order.
+            db.execSQL("UPDATE host_profiles SET sortOrder = id")
+        }
+    }
 
-        fun getInstance(context: Context): AppDatabase = instance ?: synchronized(this) {
-                instance ?: Room.databaseBuilder(
-                    context.applicationContext,
-                    AppDatabase::class.java,
-                    EncryptedDatabaseFactory.DATABASE_NAME,
-                )
-                    .openHelperFactory(EncryptedDatabaseFactory(context.applicationContext))
-                    .build()
-                    .also { instance = it }
-            }
+    companion object {
+        @Volatile private var instance: AppDatabase? = null
+
+        fun getInstance(context: Context): AppDatabase =
+            instance
+                ?: synchronized(this) {
+                    instance
+                        ?: Room.databaseBuilder(
+                                context.applicationContext,
+                                AppDatabase::class.java,
+                                EncryptedDatabaseFactory.DATABASE_NAME,
+                            )
+                            .openHelperFactory(EncryptedDatabaseFactory(context.applicationContext))
+                            .build()
+                            .also { instance = it }
+                }
     }
 }

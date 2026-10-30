@@ -57,7 +57,7 @@ class IchuchuBackupRepository(private val db: AppDatabase) {
             val localKeyId =
                 action.keyActionIndex?.let { insertedKeyIdsByActionIndex[it] } ?: action.host.keyId
             val host = action.host.copy(keyId = localKeyId, jumpHostIds = emptyList())
-            insertedHostIds[action.exportedId] = db.hostProfileDao().insertForImport(host)
+            insertedHostIds[action.exportedId] = db.hostProfileDao().appendForImport(host)
             importedHosts += 1
         }
 

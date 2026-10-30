@@ -24,7 +24,8 @@ class SshRouteSnapshot(
                     }
                     .getOrNull()
             check(
-                currentTarget?.copy(name = "") == target.copy(name = "") &&
+                currentTarget?.copy(name = "", sortOrder = 0L) ==
+                    target.copy(name = "", sortOrder = 0L) &&
                     currentHops?.map { endpoint(it.profile) } ==
                         hops.map { endpoint(it.profile) } &&
                     keys.all { database.sshKeyDao().getById(it.id) == it }
@@ -36,6 +37,7 @@ class SshRouteSnapshot(
     private fun endpoint(profile: HostProfile): HostProfile =
         profile.copy(
             name = "",
+            sortOrder = 0L,
             jumpHostIds = emptyList(),
             postConnectCommand = null,
             multiplexer = null,

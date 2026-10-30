@@ -28,9 +28,13 @@ class ServerListViewModel(application: Application) : AndroidViewModel(applicati
 
     private val searchQuery = MutableStateFlow("")
 
-    val hosts: StateFlow<List<HostProfile>> =
+    val allHosts: StateFlow<List<HostProfile>> =
         hostRepository
             .observeAll()
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    val hosts: StateFlow<List<HostProfile>> =
+        allHosts
             .combine(searchQuery) { hosts, query ->
                 val trimmed = query.trim()
                 if (trimmed.isEmpty()) return@combine hosts
@@ -45,6 +49,17 @@ class ServerListViewModel(application: Application) : AndroidViewModel(applicati
     fun updateSearchQuery(value: String) {
         searchQuery.value = value
     }
+
+    suspend fun reorderHosts(ids: List<Long>): Boolean =
+        try {
+            hostRepository.reorder(ids)
+            true
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            _error.value = e.message ?: "Could not save host order"
+            false
+        }
 
     fun deleteServer(id: Long) {
         viewModelScope.launch {

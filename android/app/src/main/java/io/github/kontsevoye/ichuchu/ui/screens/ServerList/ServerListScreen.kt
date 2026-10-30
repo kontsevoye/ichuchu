@@ -12,10 +12,16 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.awaitLongPressOrCancellation
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.drag
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -26,9 +32,11 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -39,8 +47,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.CustomAccessibilityAction
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.customActions
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
@@ -56,6 +70,7 @@ import io.github.kontsevoye.ichuchu.ui.components.IchuDialog
 import io.github.kontsevoye.ichuchu.ui.components.IchuText
 import io.github.kontsevoye.ichuchu.ui.components.IchuTextField
 import io.github.kontsevoye.ichuchu.ui.components.TuiBadge
+import io.github.kontsevoye.ichuchu.ui.components.rememberHostListReorderState
 import io.github.kontsevoye.ichuchu.ui.theme.IchuColors
 import io.github.kontsevoye.ichuchu.ui.theme.IchuTypography
 import kotlin.math.roundToInt
@@ -74,6 +89,8 @@ fun ServerListScreen(
     onDeleteServer: (Long) -> Unit,
     onOpenSettings: () -> Unit,
     modifier: Modifier = Modifier,
+    allHosts: List<HostProfile> = hosts,
+    onReorderHosts: suspend (List<Long>) -> Boolean = { false },
 ) {
     val context = LocalContext.current
     val application = context.applicationContext as Application
@@ -81,6 +98,13 @@ fun ServerListScreen(
     val connectedHostIds by sessionRepo.connectedHostIds.collectAsStateWithLifecycle()
     val openTabs by sessionRepo.tabs.collectAsStateWithLifecycle()
     val hasOpenLocalShell = openTabs.any { it.spec.transport == Transport.LocalShell }
+
+    val listState = rememberLazyListState()
+    val scope = rememberCoroutineScope()
+    val edge = with(LocalDensity.current) { 64.dp.toPx() }
+    val reorder =
+        rememberHostListReorderState(hosts, listState, edge, if (localShellEnabled) 1 else 0)
+    val canReorder = searchQuery.isBlank() && hosts.size > 1 && !reorder.saving
 
     var selectedHostId by remember { mutableStateOf<Long?>(null) }
     var pendingDisconnectHostId by remember { mutableStateOf<Long?>(null) }
@@ -121,16 +145,10 @@ fun ServerListScreen(
 
     val colors = IchuColors.current
     val typography = IchuTypography.current
-    Box(
-        modifier = modifier
-            .fillMaxSize()
-            .background(colors.background)
-    ) {
+    Box(modifier = modifier.fillMaxSize().background(colors.background)) {
         Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .windowInsetsPadding(WindowInsets.safeDrawing)
-                .padding(12.dp),
+            modifier =
+                Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing).padding(12.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             Row(
@@ -185,7 +203,13 @@ fun ServerListScreen(
 
             SectionHeader("HOSTS")
 
-            LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.weight(1f).testTag("host_list"),
+                contentPadding = PaddingValues(bottom = 80.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+                userScrollEnabled = reorder.draggingId == null,
+            ) {
                 if (localShellEnabled) {
                     item(key = "local-shell") {
                         LocalShellCard(
@@ -207,13 +231,105 @@ fun ServerListScreen(
                         }
                     }
                 } else {
-                    items(hosts, key = { it.id }) { host ->
+                    items(reorder.hosts, key = { it.id }) { host ->
                         val isConnected = host.id in connectedHostIds
                         HostCard(
                             host = host,
+                            modifier = reorder.itemModifier(host.id),
+                            reorderHandle = {
+                                if (canReorder) {
+                                    Box(
+                                        Modifier.size(48.dp)
+                                            .testTag("host_reorder_${host.id}")
+                                            .semantics {
+                                                contentDescription =
+                                                    "Reorder ${host.name}; hold and drag"
+                                                customActions = buildList {
+                                                    val index =
+                                                        reorder.hosts.indexOfFirst {
+                                                            it.id == host.id
+                                                        }
+                                                    if (index > 0) {
+                                                        add(
+                                                            CustomAccessibilityAction("Move up") {
+                                                                scope.launch {
+                                                                    reorder.move(
+                                                                        host.id,
+                                                                        -1,
+                                                                        onReorderHosts,
+                                                                    )
+                                                                }
+                                                                true
+                                                            }
+                                                        )
+                                                    }
+                                                    if (index < reorder.hosts.lastIndex) {
+                                                        add(
+                                                            CustomAccessibilityAction("Move down") {
+                                                                scope.launch {
+                                                                    reorder.move(
+                                                                        host.id,
+                                                                        1,
+                                                                        onReorderHosts,
+                                                                    )
+                                                                }
+                                                                true
+                                                            }
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                            .pointerInput(reorder, host.id) {
+                                                try {
+                                                    awaitEachGesture {
+                                                        // Own the handle's press so the card's
+                                                        // delete
+                                                        // gesture cannot claim it.
+                                                        val down =
+                                                            awaitFirstDown(
+                                                                requireUnconsumed = false
+                                                            )
+                                                        down.consume()
+                                                        val longPress =
+                                                            awaitLongPressOrCancellation(down.id)
+                                                        if (longPress != null) {
+                                                            selectedHostId = null
+                                                            reorder.start(host.id)
+                                                            val dropped =
+                                                                drag(longPress.id) { change ->
+                                                                    reorder.drag(
+                                                                        change.positionChange().y
+                                                                    )
+                                                                    change.consume()
+                                                                }
+                                                            if (dropped) {
+                                                                scope.launch {
+                                                                    reorder.drop(onReorderHosts)
+                                                                }
+                                                            } else {
+                                                                reorder.cancel()
+                                                            }
+                                                        }
+                                                    }
+                                                } finally {
+                                                    if (reorder.draggingId == host.id) {
+                                                        reorder.cancel()
+                                                    }
+                                                }
+                                            },
+                                        contentAlignment = Alignment.Center,
+                                    ) {
+                                        IchuText(
+                                            "≡",
+                                            style = typography.title,
+                                            color = colors.textMuted,
+                                        )
+                                    }
+                                }
+                            },
                             routeLabel =
                                 host.jumpHostIds.joinToString(" → ") { id ->
-                                    hosts.firstOrNull { it.id == id }?.name ?: "#$id"
+                                    allHosts.firstOrNull { it.id == id }?.name ?: "#$id"
                                 },
                             isConnected = isConnected,
                             isSelected = selectedHostId == host.id,
@@ -223,10 +339,11 @@ fun ServerListScreen(
                                 val is_selected_connected = host.id in connectedHostIds
                                 if (is_selected_connected) {
                                     Toast.makeText(
-                                        context,
-                                        "Disconnect before deleting this host",
-                                        Toast.LENGTH_SHORT,
-                                    ).show()
+                                            context,
+                                            "Disconnect before deleting this host",
+                                            Toast.LENGTH_SHORT,
+                                        )
+                                        .show()
                                 } else {
                                     onDeleteServer(host.id)
                                     selectedHostId = null
@@ -240,14 +357,14 @@ fun ServerListScreen(
                                 selectedHostId = null
                                 if (needsNotificationPermission()) {
                                     pendingConnectHostId = host.id
-                                    notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                                    notificationPermissionLauncher.launch(
+                                        Manifest.permission.POST_NOTIFICATIONS
+                                    )
                                 } else {
                                     onConnectServer(host.id)
                                 }
                             },
-                            onDisconnect = {
-                                pendingDisconnectHostId = host.id
-                            },
+                            onDisconnect = { pendingDisconnectHostId = host.id },
                         )
                     }
                 }
@@ -258,11 +375,11 @@ fun ServerListScreen(
             onClick = onAddServer,
             variant = IchuButtonVariant.Filled,
             bracketed = true,
-            modifier = Modifier
-                .align(Alignment.BottomEnd)
-                .windowInsetsPadding(WindowInsets.safeDrawing)
-                .padding(16.dp)
-                .height(44.dp),
+            modifier =
+                Modifier.align(Alignment.BottomEnd)
+                    .windowInsetsPadding(WindowInsets.safeDrawing)
+                    .padding(16.dp)
+                    .height(44.dp),
         ) {
             IchuText("+ add server", style = typography.label, color = colors.onAccent)
         }
@@ -336,10 +453,7 @@ private fun LocalShellCard(isOpen: Boolean, onOpen: () -> Unit) {
     val typography = IchuTypography.current
 
     IchuCard(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(114.dp)
-            .combinedClickable(onClick = onOpen),
+        modifier = Modifier.fillMaxWidth().height(114.dp).combinedClickable(onClick = onOpen),
         background = colors.surfaceVariant,
         border = if (isOpen) colors.success else colors.border,
     ) {
@@ -384,9 +498,9 @@ private fun LocalShellCard(isOpen: Boolean, onOpen: () -> Unit) {
     }
 }
 
-@OptIn(ExperimentalFoundationApi::class)
+@OptIn(ExperimentalFoundationApi::class, ExperimentalLayoutApi::class)
 @Composable
-private fun HostCard(
+internal fun HostCard(
     routeLabel: String,
     host: HostProfile,
     isConnected: Boolean,
@@ -397,6 +511,8 @@ private fun HostCard(
     onEdit: () -> Unit,
     onConnect: () -> Unit,
     onDisconnect: () -> Unit,
+    modifier: Modifier = Modifier,
+    reorderHandle: @Composable () -> Unit = {},
 ) {
     val colors = IchuColors.current
     val typography = IchuTypography.current
@@ -413,7 +529,7 @@ private fun HostCard(
         }
     }
 
-    Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+    Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         if (isSelected) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -441,11 +557,11 @@ private fun HostCard(
             }
         }
 
-        Box(modifier = Modifier.fillMaxWidth().height(114.dp)) {
+        Box(modifier = Modifier.fillMaxWidth().testTag("host_card_${host.id}")) {
             if (isConnected) {
                 Box(
                     modifier =
-                        Modifier.fillMaxSize()
+                        Modifier.matchParentSize()
                             .background(colors.warning.copy(alpha = 0.82f))
                             .padding(end = 14.dp)
                 ) {
@@ -461,7 +577,7 @@ private fun HostCard(
             Box(
                 modifier =
                     Modifier.offset { IntOffset(swipeOffsetX.value.roundToInt(), 0) }
-                        .fillMaxSize()
+                        .fillMaxWidth()
                         .pointerInput(host.id, isConnected) {
                             if (!isConnected) {
                                 return@pointerInput
@@ -490,14 +606,15 @@ private fun HostCard(
             ) {
                 IchuCard(
                     modifier =
-                        Modifier.fillMaxSize()
+                        Modifier.fillMaxWidth()
                             .combinedClickable(onClick = onConnect, onLongClick = onLongPress),
                     background = colors.surfaceVariant,
-                    border = when {
-                        isSelected -> colors.warning
-                        isConnected -> colors.success
-                        else -> colors.border
-                    },
+                    border =
+                        when {
+                            isSelected -> colors.warning
+                            isConnected -> colors.success
+                            else -> colors.border
+                        },
                 ) {
                     Column(modifier = Modifier.fillMaxWidth().padding(12.dp)) {
                         Row(
@@ -505,14 +622,24 @@ private fun HostCard(
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
+                            Row(
+                                modifier = Modifier.weight(1f),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
                                 IchuText(
                                     if (isConnected) "● " else "○ ",
                                     style = typography.title,
                                     color = if (isConnected) colors.success else colors.textMuted,
                                 )
-                                IchuText(host.name, style = typography.title)
+                                IchuText(
+                                    host.name,
+                                    style = typography.title,
+                                    modifier = Modifier.weight(1f),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
                             }
+                            reorderHandle()
                         }
                         Spacer(modifier = Modifier.height(2.dp))
                         Row(
@@ -537,10 +664,15 @@ private fun HostCard(
                                 "via $routeLabel",
                                 style = typography.bodySmall,
                                 color = colors.textMuted,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
                             )
                         }
                         Spacer(modifier = Modifier.height(8.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
                             IchuButton(
                                 onClick = onEdit,
                                 variant = IchuButtonVariant.Ghost,
@@ -552,20 +684,25 @@ private fun HostCard(
                                 IchuText("edit", style = typography.label, color = colors.textMuted)
                             }
                             IchuButton(
-                                onClick = {
-                                    if (isConnected) onDisconnect() else onConnect()
-                                },
+                                onClick = { if (isConnected) onDisconnect() else onConnect() },
                                 variant = IchuButtonVariant.Outlined,
                                 bracketed = true,
-                                borderColor = if (isConnected) colors.warning else colors.accentSecondary,
+                                borderColor =
+                                    if (isConnected) colors.warning else colors.accentSecondary,
                                 testTag = "host_connect_${host.id}",
-                                contentDescription = if (isConnected) "Disconnect from ${host.name}" else "Connect to ${host.name}",
+                                contentDescription =
+                                    if (isConnected) {
+                                        "Disconnect from ${host.name}"
+                                    } else {
+                                        "Connect to ${host.name}"
+                                    },
                                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
                             ) {
                                 IchuText(
                                     if (isConnected) "disconnect" else "connect",
                                     style = typography.label,
-                                    color = if (isConnected) colors.warning else colors.accentSecondary,
+                                    color =
+                                        if (isConnected) colors.warning else colors.accentSecondary,
                                 )
                             }
                         }

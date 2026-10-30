@@ -416,7 +416,11 @@ fun TerminalScreen(
     val settingsFontSize by settingsRepo.terminalFontSize.collectAsStateWithLifecycle()
     val keepScreenAwake by settingsRepo.keepScreenAwake.collectAsStateWithLifecycle()
     val disableAutocorrect by settingsRepo.disableAutocorrect.collectAsStateWithLifecycle()
+    val terminalKeyboard = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
     val keepAwakeView = LocalView.current
+    DisposableEffect(keepAwakeView, terminalKeyboard) {
+        onDispose { dismissTerminalKeyboard(keepAwakeView, terminalKeyboard) }
+    }
     DisposableEffect(keepScreenAwake, keepAwakeView) {
         val window = (keepAwakeView.context as? Activity)?.window
         if (keepScreenAwake) {
@@ -1703,6 +1707,10 @@ fun TerminalScreen(
                                                 }
                                             }
                                             .also { view -> inputViewRef.value = view }
+                                    },
+                                    onRelease = { view ->
+                                        // The session can remove this editor before route navigation runs.
+                                        dismissTerminalKeyboard(keepAwakeView, terminalKeyboard, view)
                                     },
                                     update = { view ->
                                         if (inputViewRef.value == null) {

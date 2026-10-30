@@ -206,13 +206,14 @@ class TerminalInputView(context: Context) : EditText(context) {
     }
 
     fun showKeyboard(imm: InputMethodManager?) {
-        if (imm == null) return
+        if (imm == null || !isFocusable) return
         inputMethodManager = imm
         if (!hasFocus()) {
             requestFocus()
             requestFocusFromTouch()
         }
         post {
+            if (!isAttachedToWindow || !isFocused || !isFocusable) return@post
             logInput("showKeyboard.restartInput")
             imm.restartInput(this)
             imm.showSoftInput(this, InputMethodManager.SHOW_IMPLICIT)

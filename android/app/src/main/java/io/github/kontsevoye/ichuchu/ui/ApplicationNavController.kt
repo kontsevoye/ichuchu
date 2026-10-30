@@ -68,6 +68,7 @@ private fun ProtectedNavigation(navController: NavHostController) {
                 settingsRepo.requireAuthOnConnect.collectAsStateWithLifecycle()
             val localShellEnabled by settingsRepo.localShellEnabled.collectAsStateWithLifecycle()
             val hosts by vm.hosts.collectAsStateWithLifecycle()
+            val allHosts by vm.allHosts.collectAsStateWithLifecycle()
             val searchQuery by vm.search.collectAsStateWithLifecycle()
             val deleteError by vm.error.collectAsStateWithLifecycle()
             androidx.compose.runtime.LaunchedEffect(deleteError) {
@@ -79,6 +80,8 @@ private fun ProtectedNavigation(navController: NavHostController) {
             }
             ServerListScreen(
                 hosts = hosts,
+                allHosts = allHosts,
+                onReorderHosts = vm::reorderHosts,
                 searchQuery = searchQuery,
                 onSearchChange = vm::updateSearchQuery,
                 onAddServer = { navController.navigate("servers/add") },

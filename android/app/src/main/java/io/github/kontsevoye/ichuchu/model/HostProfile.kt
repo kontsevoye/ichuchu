@@ -19,7 +19,7 @@ data class HostProfile(
     val authMethod: AuthMethod = AuthMethod.Password,
     @ColumnInfo(defaultValue = "0") val requireAuthOnConnect: Boolean = false,
     @ColumnInfo(defaultValue = "''") val jumpHostIds: List<Long> = emptyList(),
+    @ColumnInfo(defaultValue = "0") val sortOrder: Long = 0L,
     val postConnectCommand: String? = null,
-    @ColumnInfo(defaultValue = "NULL")
-    val multiplexer: MultiplexerType? = null,
+    @ColumnInfo(defaultValue = "NULL") val multiplexer: MultiplexerType? = null,
 )
