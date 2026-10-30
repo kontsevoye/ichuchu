@@ -18,10 +18,6 @@ runs:
   using: composite
   steps:
     - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
-      with:
-        extra-conf: |
-          keep-env-derivations = true
-          keep-outputs = true
     - name: Identify pinned environment
       id: identity
       shell: bash
@@ -31,13 +27,16 @@ runs:
       run: |
         [[ "$PROFILE" == ci || "$PROFILE" == signing ]] || exit 2
         version="$(nix --version | sha256sum | cut -d' ' -f1)"
-        printf 'key=nix-v1-%s-%s-%s-%s-%s\n' "$RUNNER_OS" "$RUNNER_ARCH" "$version" "$PROFILE" "$TOOLCHAIN_HASH" >> "$GITHUB_OUTPUT"
+        printf 'key=nix-v2-%s-%s-%s-%s-%s\n' "$RUNNER_OS" "$RUNNER_ARCH" "$version" "$PROFILE" "$TOOLCHAIN_HASH" >> "$GITHUB_OUTPUT"
+        printf 'legacy-key=nix-v1-%s-%s-%s-%s-%s\n' "$RUNNER_OS" "$RUNNER_ARCH" "$version" "$PROFILE" "$TOOLCHAIN_HASH" >> "$GITHUB_OUTPUT"
     - name: Restore Nix toolchain
       id: cache
       if: inputs.use-cache == 'true'
       uses: nix-community/cache-nix-action/restore@7df957e333c1e5da7721f60227dbba6d06080569 # v7
       with:
         primary-key: ${{ steps.identity.outputs.key }}
+        # One strict format migration; OS, Nix version, profile and toolchain must all match.
+        restore-prefixes-first-match: ${{ steps.identity.outputs.legacy-key }}
     - name: Realize and retain environment
       shell: bash
       env:
@@ -53,5 +52,5 @@ runs:
       uses: nix-community/cache-nix-action/save@7df957e333c1e5da7721f60227dbba6d06080569 # v7
       with:
         primary-key: ${{ steps.identity.outputs.key }}
-        gc-max-store-size-linux: 4G
+        gc-max-store-size-linux: 0
         purge: false

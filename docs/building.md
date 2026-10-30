@@ -86,9 +86,10 @@ Kotlin formatters. Room generation uses KSP2 pinned alongside Kotlin in the Grad
 version catalog; the exported Room schema is unchanged by that tool migration.
 
 Nix environments use exact OS/architecture/Nix-version/profile/toolchain keys.
-The environment is retained as a GC root; a bounded Nix store cache is saved
+The environment is retained as a GC root; unreachable store paths are collected
+before its Nix store snapshot is saved
 explicitly before any signing secrets enter the job. Signing has its own profile
-and job. Cache GC targets do not impose a hard size limit on live closures.
+and job. The snapshot retains the live profile closure; its size is reported in diagnostics.
 
 Gradle dependencies, transforms and wrapper are cached once per pinned dependency
 configuration; its task-output cache uses revision keys. Zig package sources are

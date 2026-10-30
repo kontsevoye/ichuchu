@@ -103,6 +103,12 @@ for variant in ["debug", "release"]:
         self.assertNotIn("command", report)
         self.assertNotIn("environment", report)
 
+    def test_resource_sampler_preserves_failure(self):
+        output = self.root / "failed-command"
+        result = subprocess.run([os.sys.executable, ROOT / "build-support/profile-command.py", "--output", output, "--", os.sys.executable, "-c", "raise SystemExit(23)"], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 23)
+        self.assertEqual(json.loads((output / "resources.json").read_text())["exit_code"], 23)
+
     def test_processor_control_is_complete_and_rejects_drift(self):
         spec = importlib.util.spec_from_file_location("benchmark_kapt", ROOT / "build-support/benchmark-kapt.py")
         module = importlib.util.module_from_spec(spec)
