@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Check orchestration and stale-JNI rejection with a disposable toolchain fixture."""
 
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -19,7 +20,7 @@ class AndroidBuildPipeline(unittest.TestCase):
         self.root = Path(self.temporary.name)
         support = self.root / "build-support"
         support.mkdir()
-        for name in ["build-apk.sh", "build-native.sh", "check-android.sh", "verify-apk-native.py"]:
+        for name in ["build-apk.sh", "build-native.sh", "check-android.sh", "verify-apk-native.py", "profile-command.py"]:
             shutil.copyfile(ROOT / "build-support" / name, support / name)
         (self.root / "zig-src").mkdir()
         (self.root / "android").mkdir()
@@ -87,6 +88,37 @@ for variant in ["debug", "release"]:
         self.assertIn("verify-debug-jni", timings)
         self.assertIn("verify-release-jni", timings)
         self.assertIn("| gradle |", (self.root / "summary.md").read_text())
+
+    def test_diagnostics_and_bounded_gradle_settings(self):
+        result = self.run_build("check-android.sh", CI_BUILD_DIAGNOSTICS="1", CI_GRADLE_HEAP_MB="4096", CI_GRADLE_WORKERS="4", CI_TEST_FORKS="2", CI_BENCHMARK="1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        args = self.calls()[-1]
+        self.assertIn("--max-workers=4", args)
+        self.assertIn("-PtestForks=2", args)
+        self.assertIn("--rerun-tasks", args)
+        self.assertIn("--no-build-cache", args)
+        self.assertTrue(any(arg.startswith("-Dorg.gradle.jvmargs=-Xmx4096m") for arg in args))
+        report = json.loads((self.root / ".cache/gradle-resources/resources.json").read_text())
+        self.assertEqual(report["exit_code"], 0)
+        self.assertNotIn("command", report)
+        self.assertNotIn("environment", report)
+
+    def test_processor_control_is_complete_and_rejects_drift(self):
+        spec = importlib.util.spec_from_file_location("benchmark_kapt", ROOT / "build-support/benchmark-kapt.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        text = (ROOT / "android/app/build.gradle.kts").read_text()
+        converted = module.use_kapt(text)
+        self.assertIn('id("kotlin-kapt")', converted)
+        self.assertIn('kapt(libs.room.compiler)', converted)
+        self.assertNotIn('ksp(libs.room.compiler)', converted)
+        with self.assertRaises(ValueError):
+            module.use_kapt(converted)
+
+    def test_invalid_resource_setting_is_rejected(self):
+        result = self.run_build("check-android.sh", CI_TEST_FORKS="0")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn("gradle", [row[0] for row in self.calls()])
 
     def test_stale_release_jni_is_rejected_after_a_successful_gradle_run(self):
         result = self.run_build("check-android.sh", STALE_VARIANT="release")

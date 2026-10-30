@@ -1,0 +1,57 @@
+name: Pinned Nix environment
+description: Restore and root one toolchain profile; save explicitly before signing secrets exist.
+inputs:
+  profile:
+    description: ci or signing
+    required: true
+  write-cache:
+    description: Allow this trusted invocation to seed its ref-scoped cache
+    default: 'false'
+  use-cache:
+    description: Enable Nix store restore/save (disable for a cold benchmark)
+    default: 'true'
+outputs:
+  cache-hit:
+    description: Exact toolchain/Nix/profile cache hit
+    value: ${{ steps.cache.outputs.hit-primary-key }}
+runs:
+  using: composite
+  steps:
+    - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+      with:
+        extra-conf: |
+          keep-env-derivations = true
+          keep-outputs = true
+    - name: Identify pinned environment
+      id: identity
+      shell: bash
+      env:
+        PROFILE: ${{ inputs.profile }}
+        TOOLCHAIN_HASH: ${{ hashFiles('flake.lock', 'flake.nix', 'devshell.nix') }}
+      run: |
+        [[ "$PROFILE" == ci || "$PROFILE" == signing ]] || exit 2
+        version="$(nix --version | sha256sum | cut -d' ' -f1)"
+        printf 'key=nix-v1-%s-%s-%s-%s-%s\n' "$RUNNER_OS" "$RUNNER_ARCH" "$version" "$PROFILE" "$TOOLCHAIN_HASH" >> "$GITHUB_OUTPUT"
+    - name: Restore Nix toolchain
+      id: cache
+      if: inputs.use-cache == 'true'
+      uses: nix-community/cache-nix-action/restore@7df957e333c1e5da7721f60227dbba6d06080569 # v7
+      with:
+        primary-key: ${{ steps.identity.outputs.key }}
+    - name: Realize and retain environment
+      shell: bash
+      env:
+        PROFILE: ${{ inputs.profile }}
+      run: |
+        mkdir -p .cache
+        started=$SECONDS
+        nix develop ".#$PROFILE" --profile ".cache/nix-$PROFILE" --no-update-lock-file --command true
+        printf '%s\t%s\n' "$PROFILE" "$((SECONDS - started))" > ".cache/nix-$PROFILE-timings.tsv"
+        nix path-info --json --closure-size "$(readlink -f ".cache/nix-$PROFILE")" > ".cache/nix-$PROFILE-closure.json"
+    - name: Save Nix toolchain before credentials
+      if: inputs.use-cache == 'true' && inputs.write-cache == 'true' && steps.cache.outputs.hit-primary-key != 'true'
+      uses: nix-community/cache-nix-action/save@7df957e333c1e5da7721f60227dbba6d06080569 # v7
+      with:
+        primary-key: ${{ steps.identity.outputs.key }}
+        gc-max-store-size-linux: 4G
+        purge: false

@@ -42,9 +42,36 @@ run_phase jni bash "$repo_root/build-support/build-native.sh"
 (
   cd "$repo_root/android"
   # Reuse one task graph/JVM, but execute the test task even with a warm cache.
-  run_phase gradle ./gradlew :app:assembleDebug :app:testDebugUnitTest --rerun \
-    :app:assembleRelease :app:bundleRelease \
+  gradle_args=(
+    :app:assembleDebug :app:testDebugUnitTest --rerun :app:assembleRelease :app:bundleRelease
     --no-daemon --no-configuration-cache --console=plain --profile
+  )
+  for name in CI_GRADLE_HEAP_MB CI_GRADLE_WORKERS CI_TEST_FORKS; do
+    value="${!name:-}"
+    [[ -z "$value" || "$value" =~ ^[1-9][0-9]*$ ]] || { echo "Invalid $name" >&2; exit 2; }
+  done
+  if [[ -n "${CI_GRADLE_HEAP_MB:-}" ]]; then
+    ((CI_GRADLE_HEAP_MB >= 1024 && CI_GRADLE_HEAP_MB <= 8192)) || exit 2
+    gradle_args+=("-Dorg.gradle.jvmargs=-Xmx${CI_GRADLE_HEAP_MB}m -Dfile.encoding=UTF-8 -Xlog:gc:file=$repo_root/.cache/gradle-gc.log:time,uptime,level,tags")
+  fi
+  if [[ -n "${CI_GRADLE_WORKERS:-}" ]]; then
+    ((CI_GRADLE_WORKERS <= 8)) || exit 2
+    gradle_args+=("--max-workers=$CI_GRADLE_WORKERS")
+  fi
+  if [[ -n "${CI_TEST_FORKS:-}" ]]; then
+    ((CI_TEST_FORKS <= 4)) || exit 2
+    gradle_args+=("-PtestForks=$CI_TEST_FORKS")
+  fi
+  if [[ "${CI_BENCHMARK:-0}" == 1 ]]; then
+    # Compare execution, never an R8/lint output-cache hit against real work.
+    gradle_args+=(--rerun-tasks --no-build-cache)
+  fi
+  if [[ "${CI_BUILD_DIAGNOSTICS:-0}" == 1 ]]; then
+    run_phase gradle python3 "$repo_root/build-support/profile-command.py" \
+      --output "$repo_root/.cache/gradle-resources" -- ./gradlew "${gradle_args[@]}"
+  else
+    run_phase gradle ./gradlew "${gradle_args[@]}"
+  fi
 )
 for variant in debug release; do
   run_phase "verify-$variant-jni" python3 "$repo_root/build-support/verify-apk-native.py" \

@@ -46,6 +46,7 @@
 
         devShells = {
           default = import ./devshell.nix {inherit pkgs;};
+          ci = import ./devshell.nix {inherit pkgs; profile = "ci";};
           signing = import ./devshell.nix {inherit pkgs; profile = "signing";};
           frontend = import ./devshell.nix {inherit pkgs; profile = "frontend";};
         };

@@ -5,6 +5,19 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      benchmark:
+        description: Compare bounded Gradle heap/test-fork settings without publishing
+        type: boolean
+        default: false
+      seed_cache:
+        description: Seed only this manually selected ref's caches before benchmarking
+        type: boolean
+        default: false
+      nix_cache:
+        description: Restore the exact pinned Nix environment cache
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -17,10 +30,20 @@ concurrency:
 
 jobs:
   check:
+    name: check (${{ matrix.tuning }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        tuning: ${{ fromJSON(inputs.benchmark && '["baseline","heap","parallel","workers","kapt"]' || '["default"]') }}
     env:
       GRADLE_USER_HOME: ${{ github.workspace }}/.cache/gradle
       ZIG_GLOBAL_CACHE_DIR: ${{ github.workspace }}/.cache/zig
+      CI_BUILD_DIAGNOSTICS: "1"
+      CI_GRADLE_HEAP_MB: ${{ matrix.tuning == 'baseline' && '2048' || '4096' }}
+      CI_GRADLE_WORKERS: ${{ matrix.tuning == 'workers' && '2' || '4' }}
+      CI_TEST_FORKS: ${{ matrix.tuning == 'parallel' && '2' || '1' }}
+      CI_BENCHMARK: ${{ inputs.benchmark && '1' || '0' }}
     outputs:
       skip: ${{ steps.version.outputs.skip }}
       version-name: ${{ steps.version.outputs.version_name }}
@@ -31,10 +54,14 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
-      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+      - uses: ./.github/actions/nix-environment
+        with:
+          profile: ci
+          use-cache: ${{ github.event_name != 'workflow_dispatch' || inputs.nix_cache }}
+          write-cache: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch' && inputs.seed_cache && !inputs.benchmark }}
       - name: Test release logic and lint automation
         run: |
-          nix develop --no-update-lock-file --command bash -e <<'CHECKS'
+          nix develop .#ci --no-update-lock-file --command bash -e <<'CHECKS'
           node --test build-support/*.test.mjs
           python3 build-support/test-build-pipeline.py
           shellcheck build-support/*.sh
@@ -42,30 +69,51 @@ jobs:
           CHECKS
       - name: Plan release version
         id: version
-        run: nix develop --no-update-lock-file --command node build-support/release.mjs --prepare .cache/release-plan.json
-      - name: Restore Gradle cache
+        run: nix develop .#ci --no-update-lock-file --command node build-support/release.mjs --prepare .cache/release-plan.json
+      - name: Restore Gradle dependencies
+        id: gradle-deps
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            .cache/gradle/caches/modules-2
+            .cache/gradle/caches/8.13
+            .cache/gradle/caches/jars-9
+            .cache/gradle/wrapper
+          key: gradle-deps-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('flake.lock', 'android/gradle/wrapper/gradle-wrapper.properties', 'android/gradle/libs.versions.toml', 'android/**/*.gradle.kts') }}
+      - name: Restore Gradle task outputs
         if: steps.version.outputs.skip != 'true'
         id: gradle-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
-            .cache/gradle/caches
-            .cache/gradle/wrapper
-          key: gradle-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('flake.lock', 'android/gradle/wrapper/gradle-wrapper.properties', 'android/gradle/libs.versions.toml') }}-${{ github.sha }}
+            .cache/gradle/caches/build-cache-1
+          key: gradle-tasks-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('flake.lock', 'android/gradle/wrapper/gradle-wrapper.properties', 'android/gradle/libs.versions.toml') }}-${{ github.sha }}
           restore-keys: |
-            gradle-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('flake.lock', 'android/gradle/wrapper/gradle-wrapper.properties', 'android/gradle/libs.versions.toml') }}-
-            gradle-${{ runner.os }}-${{ runner.arch }}-
-      - name: Restore Zig cache
+            gradle-tasks-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('flake.lock', 'android/gradle/wrapper/gradle-wrapper.properties', 'android/gradle/libs.versions.toml') }}-
+            gradle-tasks-v2-${{ runner.os }}-${{ runner.arch }}-
+      - name: Restore Zig dependencies
+        id: zig-deps
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .cache/zig/p
+          key: zig-deps-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('flake.lock', 'zig-src/**/build.zig.zon') }}
+      - name: Restore Zig task outputs
         if: steps.version.outputs.skip != 'true'
         id: zig-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
-            .cache/zig
+            .cache/zig/b
+            .cache/zig/h
+            .cache/zig/o
+            .cache/zig/z
             zig-src/.zig-cache
-          key: zig-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('flake.lock', 'zig-src/**/build.zig.zon') }}-${{ github.sha }}
+          key: zig-tasks-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('flake.lock', 'zig-src/**/build.zig.zon') }}-${{ github.sha }}
           restore-keys: |
-            zig-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('flake.lock', 'zig-src/**/build.zig.zon') }}-
+            zig-tasks-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('flake.lock', 'zig-src/**/build.zig.zon') }}-
+      - name: Configure manual processor control
+        if: github.event_name == 'workflow_dispatch' && inputs.benchmark && matrix.tuning == 'kapt'
+        run: python3 build-support/benchmark-kapt.py
       - name: Build and test unsigned APK and AAB
         id: build
         if: steps.version.outputs.skip != 'true'
@@ -73,30 +121,52 @@ jobs:
           ORG_GRADLE_PROJECT_enableSelfUpdate: "true"
           VERSION_NAME: ${{ steps.version.outputs.version_name }}
           VERSION_CODE: ${{ steps.version.outputs.version_code }}
-        run: nix develop --no-update-lock-file --command bash build-support/check-android.sh
-      - name: Save Gradle cache
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.version.outputs.skip != 'true' && steps.gradle-cache.outputs.cache-hit != 'true'
+        run: nix develop .#ci --no-update-lock-file --command bash build-support/check-android.sh
+      - name: Save Gradle dependencies
+        if: (github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch' && inputs.seed_cache && !inputs.benchmark) && steps.version.outputs.skip != 'true' && steps.gradle-deps.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
-            .cache/gradle/caches
+            .cache/gradle/caches/modules-2
+            .cache/gradle/caches/8.13
+            .cache/gradle/caches/jars-9
             .cache/gradle/wrapper
-          key: ${{ steps.gradle-cache.outputs.cache-primary-key }}
-      - name: Save Zig cache
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.version.outputs.skip != 'true' && steps.zig-cache.outputs.cache-hit != 'true'
+          key: ${{ steps.gradle-deps.outputs.cache-primary-key }}
+      - name: Save Gradle task outputs
+        if: (github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch' && inputs.seed_cache && !inputs.benchmark) && steps.version.outputs.skip != 'true' && steps.gradle-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
-            .cache/zig
+            .cache/gradle/caches/build-cache-1
+          key: ${{ steps.gradle-cache.outputs.cache-primary-key }}
+      - name: Save Zig dependencies
+        if: (github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch' && inputs.seed_cache && !inputs.benchmark) && steps.version.outputs.skip != 'true' && steps.zig-deps.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .cache/zig/p
+          key: ${{ steps.zig-deps.outputs.cache-primary-key }}
+      - name: Save Zig task outputs
+        if: (github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch' && inputs.seed_cache && !inputs.benchmark) && steps.version.outputs.skip != 'true' && steps.zig-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            .cache/zig/b
+            .cache/zig/h
+            .cache/zig/o
+            .cache/zig/z
             zig-src/.zig-cache
           key: ${{ steps.zig-cache.outputs.cache-primary-key }}
       - name: Upload build diagnostics
         if: always() && steps.build.outcome != 'skipped'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: build-diagnostics-${{ github.sha }}-${{ github.run_attempt }}
+          name: build-diagnostics-${{ github.sha }}-${{ github.run_attempt }}-${{ matrix.tuning }}
           path: |
             .cache/build-timings.tsv
+            .cache/nix-ci-timings.tsv
+            .cache/nix-ci-closure.json
+            .cache/gradle-resources/
+            .cache/gradle-gc.log
             android/build/reports/profile/
           include-hidden-files: true
           if-no-files-found: ignore
@@ -105,13 +175,14 @@ jobs:
         id: bundle
         if: steps.version.outputs.skip != 'true'
         with:
-          name: android-${{ github.sha }}-${{ github.run_attempt }}
+          name: android-${{ github.sha }}-${{ github.run_attempt }}-${{ matrix.tuning }}
           path: |
             .cache/release-plan.json
             android/app/build/outputs/apk/release/app-release-unsigned.apk
             android/app/build/outputs/apk/release/output-metadata.json
             android/app/build/outputs/bundle/release/app-release.aab
           include-hidden-files: true
+          compression-level: 0
           if-no-files-found: error
           retention-days: 7
 
@@ -126,7 +197,10 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+      - uses: ./.github/actions/nix-environment
+        with:
+          profile: signing
+          write-cache: true
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           artifact-ids: ${{ needs.check.outputs.artifact-id }}
@@ -145,3 +219,24 @@ jobs:
         run: nix develop .#signing --no-update-lock-file --command node build-support/release.mjs --publish --plan .cache/release-plan.json
         env:
           GH_TOKEN: ${{ github.token }}
+
+  signing-environment:
+    if: github.event_name == 'workflow_dispatch' && (inputs.seed_cache || inputs.benchmark)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/nix-environment
+        with:
+          profile: signing
+          use-cache: ${{ inputs.nix_cache }}
+          write-cache: ${{ inputs.seed_cache && !inputs.benchmark }}
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: signing-environment-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            .cache/nix-signing-timings.tsv
+            .cache/nix-signing-closure.json
+          include-hidden-files: true
+          retention-days: 7
