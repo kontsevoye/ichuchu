@@ -66,7 +66,7 @@ jobs:
           write-cache: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch' && inputs.seed_cache && !inputs.benchmark }}
       - name: Test release logic and lint automation
         run: |
-          nix develop ./.cache/nix-ci --command bash -e <<'CHECKS'
+          bash build-support/run-ci-environment.sh ci bash -e <<'CHECKS'
           node --test build-support/*.test.mjs
           python3 build-support/test-build-pipeline.py
           shellcheck build-support/*.sh
@@ -74,7 +74,7 @@ jobs:
           CHECKS
       - name: Plan release version
         id: version
-        run: nix develop ./.cache/nix-ci --command node build-support/release.mjs --prepare .cache/release-plan.json
+        run: bash build-support/run-ci-environment.sh ci node build-support/release.mjs --prepare .cache/release-plan.json
       - name: Restore Gradle dependencies
         id: gradle-deps
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -144,7 +144,7 @@ jobs:
           ORG_GRADLE_PROJECT_enableSelfUpdate: "true"
           VERSION_NAME: ${{ steps.version.outputs.version_name }}
           VERSION_CODE: ${{ steps.version.outputs.version_code }}
-        run: nix develop ./.cache/nix-ci --command bash build-support/check-android.sh
+        run: bash build-support/run-ci-environment.sh ci bash build-support/check-android.sh
       - name: Save Gradle dependencies
         if: (github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch' && inputs.seed_cache && !inputs.benchmark) && steps.version.outputs.skip != 'true' && steps.gradle-deps.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -230,7 +230,7 @@ jobs:
           path: .
           merge-multiple: true
       - name: Sign and verify the checked artifacts
-        run: nix develop ./.cache/nix-signing --command build-apk signed-release --sign-only --non-interactive --bundle
+        run: bash build-support/run-ci-environment.sh signing build-apk signed-release --sign-only --non-interactive --bundle
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
@@ -239,7 +239,7 @@ jobs:
           VERSION_NAME: ${{ needs.check.outputs.version-name }}
           VERSION_CODE: ${{ needs.check.outputs.version-code }}
       - name: Allocate SemVer tag and publish the signed artifacts
-        run: nix develop ./.cache/nix-signing --command node build-support/release.mjs --publish --plan .cache/release-plan.json
+        run: bash build-support/run-ci-environment.sh signing node build-support/release.mjs --publish --plan .cache/release-plan.json
         env:
           GH_TOKEN: ${{ github.token }}
 

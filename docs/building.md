@@ -87,14 +87,16 @@ version catalog; the exported Room schema is unchanged by that tool migration.
 
 Nix environments use exact OS/architecture/Nix-version/profile/toolchain keys.
 The environment is retained as a GC root; unreachable store paths are collected
-before its Nix store snapshot is saved
-explicitly before any signing secrets enter the job. Signing has its own profile
+before its Nix store snapshot is saved. The save runs explicitly before any
+signing secrets enter the job. Signing has its own profile
 and job. Its recorded development profile is cached with its store closure and
-used directly through `nix develop ./.cache/nix-ci` or `nix develop
-./.cache/nix-signing`. This avoids reevaluating/downloading flake inputs on a warm
+loaded with `nix print-dev-env` by `build-support/run-ci-environment.sh`. This
+official interface avoids the separate registry lookup for interactive Bash that
+`nix develop` performs for a stored profile. This avoids reevaluating/downloading flake inputs on a warm
 hit; a miss realizes the locked checkout first. The profile key includes all Nix
 configuration files, the actual Nix version, platform and profile name. Workspace
-cache ownership is repaired without dereferencing links into the Nix store. The snapshot retains the live profile closure; its size is reported in diagnostics.
+cache ownership is repaired without dereferencing links into the Nix store. The
+snapshot retains the live profile closure; its size is reported in diagnostics.
 
 Gradle dependencies, transforms and wrapper are cached once per pinned dependency
 configuration; its task-output cache uses revision keys. Zig package sources are
@@ -124,8 +126,9 @@ gh workflow run release.yml --ref YOUR_BRANCH -f benchmark=true -f nix_cache=fal
 ```
 
 The kapt control rewrites only the manual benchmark checkout and is guarded against
-production invocation; its APK/AAB are never published. Benchmark variants force task execution and disable task-output caching so R8/lint
-execution is compared with actual work. They never save caches or publish. Normal
+production invocation; its APK/AAB are never published. Benchmark variants force
+task execution and disable task-output caching so R8/lint execution is compared
+with actual work. They never save caches or publish. Normal
 manual runs cannot publish either. Use repeated hosted runs with the same commit
 and restored dependency snapshot before changing production heap/fork settings;
 include environment/cache transfer time when evaluating overall savings.

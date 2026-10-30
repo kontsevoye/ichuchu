@@ -20,7 +20,7 @@ class AndroidBuildPipeline(unittest.TestCase):
         self.root = Path(self.temporary.name)
         support = self.root / "build-support"
         support.mkdir()
-        for name in ["build-apk.sh", "build-native.sh", "check-android.sh", "verify-apk-native.py", "profile-command.py"]:
+        for name in ["build-apk.sh", "build-native.sh", "check-android.sh", "verify-apk-native.py", "profile-command.py", "run-ci-environment.sh"]:
             shutil.copyfile(ROOT / "build-support" / name, support / name)
         (self.root / "zig-src").mkdir()
         (self.root / "android").mkdir()
@@ -102,6 +102,17 @@ for variant in ["debug", "release"]:
         self.assertEqual(report["exit_code"], 0)
         self.assertNotIn("command", report)
         self.assertNotIn("environment", report)
+
+    def test_cached_environment_preserves_arguments_and_failure(self):
+        cache = self.root / ".cache"
+        cache.mkdir()
+        (cache / "nix-ci").symlink_to(self.root / "recorded-env")
+        self.executable(self.root / "bin/nix", "#!/bin/sh\n[ \"${ENV_LOAD_FAILURE:-0}\" = 0 ] || exit 17\nprintf \"export PROFILE_LOADED=1\\n\"\n")
+        command = [os.sys.executable, "-c", "import os,sys; assert os.environ['PROFILE_LOADED']=='1'; assert os.environ['EXTERNAL_PROBE']=='retained'; assert sys.argv[1]=='two words'; sys.exit(23)", "two words"]
+        result = self.run_build("run-ci-environment.sh", "ci", *command, EXTERNAL_PROBE="retained")
+        self.assertEqual(result.returncode, 23, result.stderr)
+        result = self.run_build("run-ci-environment.sh", "ci", *command, ENV_LOAD_FAILURE="1")
+        self.assertEqual(result.returncode, 17, result.stderr)
 
     def test_resource_sampler_preserves_failure(self):
         output = self.root / "failed-command"
