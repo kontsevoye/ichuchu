@@ -1,5 +1,5 @@
 name: Pinned Nix environment
-description: Restore and root one toolchain profile; save explicitly before signing secrets exist.
+description: Restore one exact toolchain profile; save explicitly before signing secrets exist.
 inputs:
   profile:
     description: ci or signing
@@ -26,45 +26,57 @@ runs:
         TOOLCHAIN_HASH: ${{ hashFiles('flake.lock', 'flake.nix', 'devshell.nix') }}
       run: |
         [[ "$PROFILE" == ci || "$PROFILE" == signing ]] || exit 2
-        python3 build-support/nix-fetcher-cache.py validate
         version="$(nix --version | sha256sum | cut -d' ' -f1)"
-        printf 'key=nix-v3-%s-%s-%s-%s-%s\n' "$RUNNER_OS" "$RUNNER_ARCH" "$version" "$PROFILE" "$TOOLCHAIN_HASH" >> "$GITHUB_OUTPUT"
+        printf 'key=nix-v4-%s-%s-%s-%s-%s\n' "$RUNNER_OS" "$RUNNER_ARCH" "$version" "$PROFILE" "$TOOLCHAIN_HASH" >> "$GITHUB_OUTPUT"
         printf 'legacy-key=nix-v2-%s-%s-%s-%s-%s\n' "$RUNNER_OS" "$RUNNER_ARCH" "$version" "$PROFILE" "$TOOLCHAIN_HASH" >> "$GITHUB_OUTPUT"
-    - name: Restore Nix toolchain
+    - name: Restore Nix toolchain and profile
       id: cache
       if: inputs.use-cache == 'true'
       uses: nix-community/cache-nix-action/restore@7df957e333c1e5da7721f60227dbba6d06080569 # v7
       with:
         primary-key: ${{ steps.identity.outputs.key }}
         paths: |
-          ~/.cache/nix/tarball-cache-v2
-          .cache/nix-public-fetcher.json
+          .cache/nix-${{ inputs.profile }}
+          .cache/nix-${{ inputs.profile }}-*-link
     - name: Restore exact previous store-only format
       if: inputs.use-cache == 'true' && steps.cache.outputs.hit-primary-key != 'true'
       uses: nix-community/cache-nix-action/restore@7df957e333c1e5da7721f60227dbba6d06080569 # v7
       with:
         primary-key: ${{ steps.identity.outputs.legacy-key }}
-    - name: Restore audited public fetcher metadata
+    - name: Restore workspace cache ownership
       shell: bash
-      run: python3 build-support/nix-fetcher-cache.py import --database "$HOME/.cache/nix/fetcher-cache-v4.sqlite" --bundle .cache/nix-public-fetcher.json
+      run: |
+        [[ ! -L .cache ]] || exit 2
+        mkdir -p .cache
+        # The Nix cache restores as root. Never dereference its links into /nix/store.
+        sudo chown -hR "$(id -u):$(id -g)" .cache
     - name: Realize and retain environment
       shell: bash
       env:
         PROFILE: ${{ inputs.profile }}
+        CACHE_HIT: ${{ steps.cache.outputs.hit-primary-key }}
       run: |
-        mkdir -p .cache
         started=$SECONDS
-        nix develop ".#$PROFILE" --profile ".cache/nix-$PROFILE" --no-update-lock-file --command true
-        printf '%s\t%s\n' "$PROFILE" "$((SECONDS - started))" > ".cache/nix-$PROFILE-timings.tsv"
-        nix path-info --json --closure-size "$(readlink -f ".cache/nix-$PROFILE")" > ".cache/nix-$PROFILE-closure.json"
-        python3 build-support/nix-fetcher-cache.py export --database "$HOME/.cache/nix/fetcher-cache-v4.sqlite" --bundle .cache/nix-public-fetcher.json
+        profile=".cache/nix-$PROFILE"
+        cached=false
+        if [[ "$CACHE_HIT" == true && -L "$profile" ]]; then
+          target="$(readlink -f "$profile")"
+          if [[ "$target" == /nix/store/*-ichuchu-"$PROFILE"-env ]] && nix develop "$profile" --command true; then
+            cached=true
+          fi
+        fi
+        if [[ "$cached" != true ]]; then
+          nix develop ".#$PROFILE" --profile "$profile" --no-update-lock-file --command true
+        fi
+        printf '%s\t%s\t%s\n' "$PROFILE" "$((SECONDS - started))" "$cached" > ".cache/nix-$PROFILE-timings.tsv"
+        nix path-info --json --closure-size "$(readlink -f "$profile")" > ".cache/nix-$PROFILE-closure.json"
     - name: Save Nix toolchain before credentials
       if: inputs.use-cache == 'true' && inputs.write-cache == 'true' && steps.cache.outputs.hit-primary-key != 'true'
       uses: nix-community/cache-nix-action/save@7df957e333c1e5da7721f60227dbba6d06080569 # v7
       with:
         primary-key: ${{ steps.identity.outputs.key }}
         paths: |
-          ~/.cache/nix/tarball-cache-v2
-          .cache/nix-public-fetcher.json
+          .cache/nix-${{ inputs.profile }}
+          .cache/nix-${{ inputs.profile }}-*-link
         gc-max-store-size-linux: 0
         purge: false

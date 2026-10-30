@@ -89,11 +89,12 @@ Nix environments use exact OS/architecture/Nix-version/profile/toolchain keys.
 The environment is retained as a GC root; unreachable store paths are collected
 before its Nix store snapshot is saved
 explicitly before any signing secrets enter the job. Signing has its own profile
-and job. Locked public flake archives also reuse their bare Git object cache and a
-fresh whitelist-only hash/time metadata bundle. Generic fetcher databases,
-credential URLs and request headers are excluded. A bootstrap guard rejects inputs
-outside the audited public GitHub set before restoring this cache; review that
-policy when adding Nix inputs. The snapshot retains the live profile closure; its size is reported in diagnostics.
+and job. Its recorded development profile is cached with its store closure and
+used directly through `nix develop ./.cache/nix-ci` or `nix develop
+./.cache/nix-signing`. This avoids reevaluating/downloading flake inputs on a warm
+hit; a miss realizes the locked checkout first. The profile key includes all Nix
+configuration files, the actual Nix version, platform and profile name. Workspace
+cache ownership is repaired without dereferencing links into the Nix store. The snapshot retains the live profile closure; its size is reported in diagnostics.
 
 Gradle dependencies, transforms and wrapper are cached once per pinned dependency
 configuration; its task-output cache uses revision keys. Zig package sources are
