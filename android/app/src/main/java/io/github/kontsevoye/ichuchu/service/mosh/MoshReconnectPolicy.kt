@@ -3,8 +3,8 @@ package io.github.kontsevoye.ichuchu.service.mosh
 /**
  * Keeps transient network loss inside the existing Mosh session.
  *
- * The server expires before the client declares a prolonged outage fatal, so
- * timeout-driven recovery does not replace a remote session that is still alive.
+ * The server expires before the client declares a prolonged outage fatal, so timeout-driven
+ * recovery does not replace a remote session that is still alive.
  */
 internal object MoshReconnectPolicy {
     const val SERVER_NETWORK_TIMEOUT_SECONDS = 30L * 24 * 60 * 60
@@ -17,9 +17,18 @@ internal object MoshReconnectPolicy {
     const val CLIENT_MAX_RETRANSMIT_COUNT =
         CLIENT_NETWORK_TIMEOUT_MS / CLIENT_MIN_RETRANSMIT_INTERVAL_MS + 1
 
-    fun bootstrapCommand(): String =
-        "env LANG=C.UTF-8 LC_ALL=C.UTF-8 " +
+    fun bootstrapCommand(startupCommand: String? = null): String {
+        // Start the multiplexer as the server's child, before any interactive shell
+        // output or post-connect input. The account's login shell may not be POSIX.
+        val childCommand =
+            startupCommand
+                ?.takeIf { it.isNotBlank() }
+                ?.let { " -- /bin/sh -c '" + it.replace("'", "'\\''") + "'" }
+                .orEmpty()
+        return "env LANG=C.UTF-8 LC_ALL=C.UTF-8 " +
             "MOSH_SERVER_NETWORK_TMOUT=$SERVER_NETWORK_TIMEOUT_SECONDS " +
             "PATH=\"/opt/homebrew/bin:/usr/local/bin:/home/linuxbrew/.linuxbrew/bin:/opt/local/bin:\$PATH\" " +
-            "mosh-server new -s -c 256"
+            "mosh-server new -s -c 256" +
+            childCommand
+    }
 }

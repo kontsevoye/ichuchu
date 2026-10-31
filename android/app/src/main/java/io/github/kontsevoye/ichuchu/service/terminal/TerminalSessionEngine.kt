@@ -101,11 +101,7 @@ class TerminalSessionEngine(
     ) {
         fun multiplexerStartupCommand(): String? {
             val type = multiplexer ?: return null
-            if (
-                !type.runtimeSupported ||
-                    transport == Transport.Mosh ||
-                    transport == Transport.LocalShell
-            ) {
+            if (!type.supportsTransport(transport)) {
                 return null
             }
             val sessionName = multiplexerSessionName?.takeIf { it.isNotBlank() } ?: return null
@@ -514,7 +510,7 @@ class TerminalSessionEngine(
         val multiplexer =
             MultiplexerRegistry.forType(type)
                 ?: return MultiplexerAvailability.UnsupportedMultiplexer(type)
-        if (params.transport == Transport.Mosh || params.transport == Transport.LocalShell) {
+        if (!type.supportsTransport(params.transport)) {
             return MultiplexerAvailability.UnsupportedTransport(params.transport)
         }
         return runCatching {
@@ -553,7 +549,7 @@ class TerminalSessionEngine(
             val multiplexer =
                 MultiplexerRegistry.forType(type)
                     ?: throw IllegalStateException("${type.label} is not supported yet")
-            if (spec.transport == Transport.Mosh || spec.transport == Transport.LocalShell) {
+            if (!type.supportsTransport(spec.transport)) {
                 throw IllegalStateException(
                     "${type.label} is not supported for ${spec.transport} connections"
                 )
@@ -578,7 +574,7 @@ class TerminalSessionEngine(
             val multiplexer =
                 MultiplexerRegistry.forType(type)
                     ?: throw IllegalStateException("${type.label} is not supported yet")
-            if (spec.transport == Transport.Mosh || spec.transport == Transport.LocalShell) {
+            if (!type.supportsTransport(spec.transport)) {
                 throw IllegalStateException(
                     "${type.label} is not supported for ${spec.transport} connections"
                 )
@@ -1003,7 +999,7 @@ class TerminalSessionEngine(
         )
         // Use exec channel to bypass shell init noise and MOTD.
         // Falls back to shell if the remote server doesn't support exec.
-        val moshCommand = MoshReconnectPolicy.bootstrapCommand()
+        val moshCommand = MoshReconnectPolicy.bootstrapCommand(params.multiplexerStartupCommand())
         val execOpened = runCatching { nativeSsh.openExec(moshCommand) }.getOrDefault(false)
         if (!execOpened) {
             Log.w("TerminalSession", "MOSH: exec channel unavailable, falling back to shell")

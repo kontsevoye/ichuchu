@@ -1,16 +1,47 @@
 package io.github.kontsevoye.ichuchu.service.multiplexer
 
+import java.io.File
 import org.junit.Assert.assertEquals
+import org.junit.Assume.assumeTrue
 import org.junit.Test
 
 class TmuxMultiplexerTest {
     @Test
+    fun listSessionsPreservesExitMarkerInPosixShell() {
+        assertListSessionsExitMarker("/bin/sh")
+    }
+
+    @Test
+    fun listSessionsPreservesExitMarkerInZsh() {
+        assumeTrue("zsh is not installed", File("/bin/zsh").canExecute())
+        assertListSessionsExitMarker("/bin/zsh")
+    }
+
+    private fun assertListSessionsExitMarker(shell: String) {
+        for (tmuxExitCode in listOf(0, 1, 2)) {
+            // Stub tmux so no real server or user sessions are accessed. Match the
+            // exec-channel envelope used when loading the remote session picker.
+            val command =
+                "tmux() { return $tmuxExitCode; }; " +
+                    TmuxMultiplexer.listSessionsCommand() +
+                    "; printf '\\nICHUCHU_EXIT:%s\\n' \"\$?\""
+            val process = ProcessBuilder(shell, "-f", "-c", command).start()
+            val stdout = process.inputStream.bufferedReader().use { it.readText() }
+            val stderr = process.errorStream.bufferedReader().use { it.readText() }
+            assertEquals("$shell: $stderr", 0, process.waitFor())
+            val expectedExitCode = if (tmuxExitCode <= 1) 0 else 1
+            assertEquals("$shell: $stderr", "\nICHUCHU_EXIT:$expectedExitCode\n", stdout)
+        }
+    }
+
+    @Test
     fun launchCreatesOrSwitchesOutsideTmuxAndSwitchesClientInsideTmux() {
-        val command = TmuxMultiplexer.launchCommand(
-            sessionName = "ichuchu-1",
-            createIfMissing = true,
-            trustedRemoteName = false,
-        )
+        val command =
+            TmuxMultiplexer.launchCommand(
+                sessionName = "ichuchu-1",
+                createIfMissing = true,
+                trustedRemoteName = false,
+            )
 
         assertEquals(
             "if [ -n \"\$TMUX\" ]; then tmux switch-client -t '=ichuchu-1'; else exec tmux new-session -A -s 'ichuchu-1'; fi",
@@ -29,11 +60,12 @@ class TmuxMultiplexerTest {
 
     @Test
     fun launchQuotesTrustedRemoteNames() {
-        val command = TmuxMultiplexer.launchCommand(
-            sessionName = "work'space; rm -rf /",
-            createIfMissing = true,
-            trustedRemoteName = true,
-        )
+        val command =
+            TmuxMultiplexer.launchCommand(
+                sessionName = "work'space; rm -rf /",
+                createIfMissing = true,
+                trustedRemoteName = true,
+            )
 
         assertEquals(
             "if [ -n \"\$TMUX\" ]; then tmux switch-client -t '=work'\\''space; rm -rf /'; else exec tmux new-session -A -s 'work'\\''space; rm -rf /'; fi",
@@ -43,11 +75,12 @@ class TmuxMultiplexerTest {
 
     @Test
     fun launchExistingUsesSwitchClientAndExactAttachFallback() {
-        val command = TmuxMultiplexer.launchCommand(
-            sessionName = "ichuchu-1",
-            createIfMissing = false,
-            trustedRemoteName = true,
-        )
+        val command =
+            TmuxMultiplexer.launchCommand(
+                sessionName = "ichuchu-1",
+                createIfMissing = false,
+                trustedRemoteName = true,
+            )
 
         assertEquals(
             "if [ -n \"\$TMUX\" ]; then tmux switch-client -t '=ichuchu-1'; " +
@@ -59,11 +92,12 @@ class TmuxMultiplexerTest {
 
     @Test
     fun launchExistingQuotesTrustedRemoteNamesWithMetacharacters() {
-        val command = TmuxMultiplexer.launchCommand(
-            sessionName = "main tab; printf 'x'",
-            createIfMissing = false,
-            trustedRemoteName = true,
-        )
+        val command =
+            TmuxMultiplexer.launchCommand(
+                sessionName = "main tab; printf 'x'",
+                createIfMissing = false,
+                trustedRemoteName = true,
+            )
 
         assertEquals(
             "if [ -n \"\$TMUX\" ]; then tmux switch-client -t '=main tab; printf '\\''x'\\'''; " +
@@ -80,7 +114,7 @@ class TmuxMultiplexerTest {
         assertEquals(
             "if ! command -v tmux >/dev/null 2>&1; then printf 'tmux executable not found\\n' >&2; false; " +
                 "else tmux list-sessions -F '#{session_name}\t#{session_attached}' 2>/dev/null; " +
-                "status=\$?; if [ \"\$status\" -eq 1 ]; then true; else [ \"\$status\" -eq 0 ]; fi; fi",
+                "tmux_exit_code=\$?; if [ \"\$tmux_exit_code\" -eq 1 ]; then true; else [ \"\$tmux_exit_code\" -eq 0 ]; fi; fi",
             command,
         )
     }

@@ -9,10 +9,11 @@ object TmuxMultiplexer : Multiplexer {
 
     override fun availabilityCommand(): String = "command -v tmux >/dev/null 2>&1"
 
+    // SSH exec uses the account's shell; `status` is a read-only parameter in zsh.
     override fun listSessionsCommand(): String =
         "if ! command -v tmux >/dev/null 2>&1; then printf 'tmux executable not found\\n' >&2; false; " +
             "else tmux list-sessions -F '#{session_name}\t#{session_attached}' 2>/dev/null; " +
-            "status=\$?; if [ \"\$status\" -eq 1 ]; then true; else [ \"\$status\" -eq 0 ]; fi; fi"
+            "tmux_exit_code=\$?; if [ \"\$tmux_exit_code\" -eq 1 ]; then true; else [ \"\$tmux_exit_code\" -eq 0 ]; fi; fi"
 
     override fun parseSessions(output: String): List<RemoteMultiplexerSession> =
         output
@@ -22,10 +23,7 @@ object TmuxMultiplexer : Multiplexer {
                 if (trimmed.isBlank()) return@mapNotNull null
                 val parts = trimmed.split('\t')
                 if (parts.isEmpty() || parts[0].isBlank()) return@mapNotNull null
-                RemoteMultiplexerSession(
-                    name = parts[0],
-                    attached = parts.getOrNull(1) == "1",
-                )
+                RemoteMultiplexerSession(name = parts[0], attached = parts.getOrNull(1) == "1")
             }
             .toList()
 
@@ -33,19 +31,21 @@ object TmuxMultiplexer : Multiplexer {
         sessionName: String,
         createIfMissing: Boolean,
         trustedRemoteName: Boolean,
-    ): String = if (createIfMissing) {
-        interactiveAttachOrSwitchCommand(sessionName, trustedRemoteName)
-    } else {
-        interactiveAttachExistingCommand(sessionName, trustedRemoteName)
-    }
+    ): String =
+        if (createIfMissing) {
+            interactiveAttachOrSwitchCommand(sessionName, trustedRemoteName)
+        } else {
+            interactiveAttachExistingCommand(sessionName, trustedRemoteName)
+        }
 
     override fun defaultSessionName(
         remoteSessions: Collection<RemoteMultiplexerSession>,
         localSessionNames: Collection<String>,
-    ): String = MultiplexerSessionAllocator.nextIchuchuSessionName(
-        remoteSessions = remoteSessions,
-        localSessionNames = localSessionNames,
-    )
+    ): String =
+        MultiplexerSessionAllocator.nextIchuchuSessionName(
+            remoteSessions = remoteSessions,
+            localSessionNames = localSessionNames,
+        )
 
     fun isGeneratedSessionName(name: String): Boolean = ichuchuSessionRegex.matches(name)
 
@@ -76,6 +76,5 @@ object TmuxMultiplexer : Multiplexer {
             "else printf 'tmux session %s is no longer available\\n' $target; exec \"\${SHELL:-/bin/sh}\" -l; fi"
     }
 
-    private fun shellQuote(value: String): String =
-        "'" + value.replace("'", "'\\''") + "'"
+    private fun shellQuote(value: String): String = "'" + value.replace("'", "'\\''") + "'"
 }

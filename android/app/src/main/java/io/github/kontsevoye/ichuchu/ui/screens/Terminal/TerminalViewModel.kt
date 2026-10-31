@@ -62,6 +62,7 @@ class TerminalViewModel(application: Application) : AndroidViewModel(application
 
     private sealed class PendingMultiplexerAction(open val spec: TabSpec) {
         data class Open(override val spec: TabSpec) : PendingMultiplexerAction(spec)
+
         data class Reconnect(val tabId: String, override val spec: TabSpec) : PendingMultiplexerAction(spec)
     }
 
@@ -102,11 +103,12 @@ class TerminalViewModel(application: Application) : AndroidViewModel(application
             tabs.collect { openTabs ->
                 val liveIds = openTabs.map { it.id }.toSet()
                 // EOF can close a tab in the repository without going through closeTab().
-                val trackedIds = _connectionTabByTab.value.keys +
-                    _fileBrowserStateByTab.value.keys +
-                    fileHomeByTab.keys +
-                    fileBrowserRefreshJobs.keys +
-                    fileBrowserResolverJobs.keys
+                val trackedIds =
+                    _connectionTabByTab.value.keys +
+                        _fileBrowserStateByTab.value.keys +
+                        fileHomeByTab.keys +
+                        fileBrowserRefreshJobs.keys +
+                        fileBrowserResolverJobs.keys
                 trackedIds.filterNot { it in liveIds }.forEach(::clearTabState)
             }
         }
@@ -249,13 +251,16 @@ class TerminalViewModel(application: Application) : AndroidViewModel(application
     }
 
     private fun startMultiplexerDuplicate(spec: TabSpec) {
-        val duplicateSpec = spec.copy(
-            multiplexer = spec.multiplexer ?: MultiplexerRegistry.defaultType,
-            multiplexerSessionName = null,
-            multiplexerCreateIfMissing = true,
-        )
+        val duplicateSpec =
+            spec.copy(
+                multiplexer = spec.multiplexer ?: MultiplexerRegistry.defaultType,
+                multiplexerSessionName = null,
+                multiplexerCreateIfMissing = true,
+            )
         viewModelScope.launch(Dispatchers.IO) {
-            val result = runCatching { sessionRepository.resolveMultiplexerSessionName(duplicateSpec) }
+            val result = runCatching {
+                sessionRepository.resolveMultiplexerSessionName(duplicateSpec)
+            }
             withContext(Dispatchers.Main) {
                 result.fold(
                     onSuccess = { name ->
@@ -306,18 +311,23 @@ class TerminalViewModel(application: Application) : AndroidViewModel(application
         val spec = preparedAction.spec
         val label = spec.multiplexer?.label ?: MultiplexerRegistry.defaultType.label
         val reconnectRecovery = preparedAction is PendingMultiplexerAction.Reconnect
-        if (spec.transport == Transport.Mosh) {
-            _multiplexerState.value = MultiplexerUiState(
-                preflightError = "$label is not supported for Mosh connections",
-                reconnectRecovery = reconnectRecovery,
-            )
+        if (
+            spec.multiplexer?.supportsTransport(spec.transport) == false &&
+                spec.multiplexer.runtimeSupported
+        ) {
+            _multiplexerState.value =
+                MultiplexerUiState(
+                    preflightError = "$label is not supported for ${spec.transport} connections",
+                    reconnectRecovery = reconnectRecovery,
+                )
             return
         }
         if (spec.multiplexer != null && spec.multiplexer.runtimeSupported.not()) {
-            _multiplexerState.value = MultiplexerUiState(
-                preflightError = "${spec.multiplexer.label} is not supported yet",
-                reconnectRecovery = reconnectRecovery,
-            )
+            _multiplexerState.value =
+                MultiplexerUiState(
+                    preflightError = "${spec.multiplexer.label} is not supported yet",
+                    reconnectRecovery = reconnectRecovery,
+                )
             return
         }
         _multiplexerState.value = MultiplexerUiState(reconnectRecovery = reconnectRecovery)
@@ -331,7 +341,9 @@ class TerminalViewModel(application: Application) : AndroidViewModel(application
                 )
             }
             withContext(Dispatchers.Main) {
-                if (!isCurrentMultiplexerAction(actionGeneration, preparedAction)) return@withContext
+                if (!isCurrentMultiplexerAction(actionGeneration, preparedAction)) {
+                    return@withContext
+                }
                 result.fold(
                     onSuccess = { sessionName ->
                         completeMultiplexerAction(actionGeneration, preparedAction, sessionName)
@@ -360,21 +372,23 @@ class TerminalViewModel(application: Application) : AndroidViewModel(application
         sessionName: String,
     ) {
         if (!isCurrentMultiplexerAction(actionGeneration, action)) return
-        val nextSpec = action.spec.copy(
-            multiplexer = action.spec.multiplexer ?: MultiplexerRegistry.defaultType,
-            multiplexerSessionName = sessionName,
-            multiplexerCreateIfMissing = action.spec.multiplexerCreateIfMissing,
-        )
+        val nextSpec =
+            action.spec.copy(
+                multiplexer = action.spec.multiplexer ?: MultiplexerRegistry.defaultType,
+                multiplexerSessionName = sessionName,
+                multiplexerCreateIfMissing = action.spec.multiplexerCreateIfMissing,
+            )
         pendingMultiplexerAction = null
         _multiplexerState.value = MultiplexerUiState()
         when (action) {
             is PendingMultiplexerAction.Open -> openTab(nextSpec)
             is PendingMultiplexerAction.Reconnect -> {
                 if (!reconnectTabWithSpec(action.tabId, nextSpec)) {
-                    _multiplexerState.value = MultiplexerUiState(
-                        preflightError = "Terminal session is no longer available",
-                        reconnectRecovery = true,
-                    )
+                    _multiplexerState.value =
+                        MultiplexerUiState(
+                            preflightError = "Terminal session is no longer available",
+                            reconnectRecovery = true,
+                        )
                 }
             }
         }
@@ -393,39 +407,46 @@ class TerminalViewModel(application: Application) : AndroidViewModel(application
         val requestGeneration = ++multiplexerSessionListGeneration
         val sourceTabId = tab.id
         val sourceHostId = tab.spec.hostId
-        val spec = tab.spec.copy(multiplexer = tab.spec.multiplexer ?: MultiplexerRegistry.defaultType)
-        _multiplexerState.value = _multiplexerState.value.copy(
-            sessions = emptyList(),
-            sessionsLoading = true,
-            sessionsError = null,
-            sessionsSourceTabId = sourceTabId,
-            sessionsSourceHostId = sourceHostId,
-        )
+        val spec =
+            tab.spec.copy(multiplexer = tab.spec.multiplexer ?: MultiplexerRegistry.defaultType)
+        _multiplexerState.value =
+            _multiplexerState.value.copy(
+                sessions = emptyList(),
+                sessionsLoading = true,
+                sessionsError = null,
+                sessionsSourceTabId = sourceTabId,
+                sessionsSourceHostId = sourceHostId,
+            )
         viewModelScope.launch(Dispatchers.IO) {
             val result = runCatching { sessionRepository.listMultiplexerSessions(spec) }
             withContext(Dispatchers.Main) {
                 val activeTab = sessionRepository.activeTab.value
-                if (requestGeneration != multiplexerSessionListGeneration || activeTab?.id != sourceTabId) {
+                if (
+                    requestGeneration != multiplexerSessionListGeneration ||
+                        activeTab?.id != sourceTabId
+                ) {
                     return@withContext
                 }
                 result.fold(
                     onSuccess = { sessions ->
-                        _multiplexerState.value = _multiplexerState.value.copy(
-                            sessions = sessions,
-                            sessionsLoading = false,
-                            sessionsError = null,
-                            sessionsSourceTabId = sourceTabId,
-                            sessionsSourceHostId = sourceHostId,
-                        )
+                        _multiplexerState.value =
+                            _multiplexerState.value.copy(
+                                sessions = sessions,
+                                sessionsLoading = false,
+                                sessionsError = null,
+                                sessionsSourceTabId = sourceTabId,
+                                sessionsSourceHostId = sourceHostId,
+                            )
                     },
                     onFailure = { error ->
-                        _multiplexerState.value = _multiplexerState.value.copy(
-                            sessions = emptyList(),
-                            sessionsLoading = false,
-                            sessionsError = error.message ?: "Failed to list sessions",
-                            sessionsSourceTabId = sourceTabId,
-                            sessionsSourceHostId = sourceHostId,
-                        )
+                        _multiplexerState.value =
+                            _multiplexerState.value.copy(
+                                sessions = emptyList(),
+                                sessionsLoading = false,
+                                sessionsError = error.message ?: "Failed to list sessions",
+                                sessionsSourceTabId = sourceTabId,
+                                sessionsSourceHostId = sourceHostId,
+                            )
                     },
                 )
             }
@@ -434,11 +455,12 @@ class TerminalViewModel(application: Application) : AndroidViewModel(application
 
     fun createNextMultiplexerSession() {
         val tab = sessionRepository.activeTab.value ?: return
-        val nextSpec = tab.spec.copy(
-            multiplexer = tab.spec.multiplexer ?: MultiplexerRegistry.defaultType,
-            multiplexerSessionName = null,
-            multiplexerCreateIfMissing = true,
-        )
+        val nextSpec =
+            tab.spec.copy(
+                multiplexer = tab.spec.multiplexer ?: MultiplexerRegistry.defaultType,
+                multiplexerSessionName = null,
+                multiplexerCreateIfMissing = true,
+            )
         viewModelScope.launch(Dispatchers.IO) {
             val result = runCatching { sessionRepository.resolveMultiplexerSessionName(nextSpec) }
             withContext(Dispatchers.Main) {
@@ -463,16 +485,21 @@ class TerminalViewModel(application: Application) : AndroidViewModel(application
         val activeTab = sessionRepository.activeTab.value
         val state = _multiplexerState.value
         val activeHostId = activeTab?.spec?.hostId
-        val sessionListMatchesTab = sourceTabId != null && state.sessionsSourceTabId == sourceTabId && activeTab?.id == sourceTabId
-        val sessionListMatchesHost = activeHostId != null && state.sessionsSourceHostId == activeHostId
+        val sessionListMatchesTab =
+            sourceTabId != null &&
+                state.sessionsSourceTabId == sourceTabId &&
+                activeTab?.id == sourceTabId
+        val sessionListMatchesHost =
+            activeHostId != null && state.sessionsSourceHostId == activeHostId
         if (activeTab == null || (!sessionListMatchesTab && !sessionListMatchesHost)) {
-            _multiplexerState.value = state.copy(
-                sessions = emptyList(),
-                sessionsLoading = false,
-                sessionsError = "Session list is stale. Refresh sessions and try again.",
-                sessionsSourceTabId = activeTab?.id,
-                sessionsSourceHostId = activeHostId,
-            )
+            _multiplexerState.value =
+                state.copy(
+                    sessions = emptyList(),
+                    sessionsLoading = false,
+                    sessionsError = "Session list is stale. Refresh sessions and try again.",
+                    sessionsSourceTabId = activeTab?.id,
+                    sessionsSourceHostId = activeHostId,
+                )
             return
         }
         sessionRepository.switchActiveMultiplexerSession(name)
@@ -485,11 +512,12 @@ class TerminalViewModel(application: Application) : AndroidViewModel(application
 
     fun connectPendingWithoutMultiplexer(): Boolean {
         val action = pendingMultiplexerAction ?: return false
-        val plainSpec = action.spec.copy(
-            multiplexer = null,
-            multiplexerSessionName = null,
-            multiplexerCreateIfMissing = true,
-        )
+        val plainSpec =
+            action.spec.copy(
+                multiplexer = null,
+                multiplexerSessionName = null,
+                multiplexerCreateIfMissing = true,
+            )
         _multiplexerState.value = MultiplexerUiState()
         pendingMultiplexerAction = null
         multiplexerActionGeneration += 1
@@ -570,7 +598,8 @@ class TerminalViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
-    private fun tabExists(tabId: String): Boolean = sessionRepository.tabs.value.any { it.id == tabId }
+    private fun tabExists(tabId: String): Boolean =
+        sessionRepository.tabs.value.any { it.id == tabId }
 
     private fun currentSessionPwd(tabId: String): String? =
         sessionRepository.tabs.value
@@ -607,7 +636,8 @@ class TerminalViewModel(application: Application) : AndroidViewModel(application
         val resolverJob =
             viewModelScope.launch(Dispatchers.IO) {
                 val tabState = sessionRepository.tabs.value.firstOrNull { it.id == tabId }
-                val fallback = tabState?.engine?.state?.value?.pwd?.takeIf { it.isNotBlank() } ?: "/"
+                val fallback =
+                    tabState?.engine?.state?.value?.pwd?.takeIf { it.isNotBlank() } ?: "/"
                 val resolved = resolveRealpath(tabId, ".") ?: resolveRealpath(tabId, "~")
                 if (!isActive || !tabExists(tabId)) return@launch
                 val home = resolved ?: fallback
@@ -752,7 +782,8 @@ class TerminalViewModel(application: Application) : AndroidViewModel(application
         withContext(Dispatchers.Main) { refreshFileBrowser() }
     }
 
-    suspend fun readFile(tabId: String, entry: FileBrowserEntry, maxBytes: Int): ByteArray = sessionRepository.sftpReadFile(tabId, entry.path, maxBytes)
+    suspend fun readFile(tabId: String, entry: FileBrowserEntry, maxBytes: Int): ByteArray =
+        sessionRepository.sftpReadFile(tabId, entry.path, maxBytes)
 
     private fun formatMtime(epochSeconds: Long): String {
         val formatter = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US)

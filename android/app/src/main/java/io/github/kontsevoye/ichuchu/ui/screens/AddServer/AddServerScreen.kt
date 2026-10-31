@@ -411,7 +411,11 @@ fun AddServerScreen(vm: AddServerViewModel, onBack: () -> Unit, modifier: Modifi
                 )
             }
             SectionDivider()
-            MultiplexerSection(selected = form.multiplexer, onSelect = vm::updateMultiplexer)
+            MultiplexerSection(
+                selected = form.multiplexer,
+                transport = form.transport,
+                onSelect = vm::updateMultiplexer,
+            )
             SectionDivider()
             PostConnectActionSection(
                 command = form.postConnectCommand,
@@ -601,7 +605,11 @@ private enum class MultiplexerOption(val type: MultiplexerType?) {
 }
 
 @Composable
-private fun MultiplexerSection(selected: MultiplexerType?, onSelect: (MultiplexerType?) -> Unit) {
+private fun MultiplexerSection(
+    selected: MultiplexerType?,
+    transport: Transport,
+    onSelect: (MultiplexerType?) -> Unit,
+) {
     val colors = IchuColors.current
     val typography = IchuTypography.current
     SectionHeader("SESSION PERSISTENCE")
@@ -618,7 +626,7 @@ private fun MultiplexerSection(selected: MultiplexerType?, onSelect: (Multiplexe
             ),
         selected = selectedOption,
         onSelect = { onSelect(it.type) },
-        disabledOptions = setOf(MultiplexerOption.Zellij),
+        disabledOptions = options.filter { it.type?.supportsTransport(transport) == false }.toSet(),
     )
 }
 

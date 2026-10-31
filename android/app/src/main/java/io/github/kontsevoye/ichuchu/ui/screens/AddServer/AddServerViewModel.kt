@@ -206,9 +206,7 @@ class AddServerViewModel(application: Application, private val hostId: Long?) : 
                 transport = transport,
                 authMethod = nextAuthMethod,
                 multiplexer =
-                    current.multiplexer.takeIf {
-                        transport != Transport.Mosh && it?.runtimeSupported == true
-                    },
+                    current.multiplexer.takeIf { it?.supportsTransport(transport) == true },
             )
     }
 
@@ -234,10 +232,7 @@ class AddServerViewModel(application: Application, private val hostId: Long?) : 
         val current = _form.value
         _form.value =
             current.copy(
-                multiplexer =
-                    multiplexer?.takeIf {
-                        current.transport != Transport.Mosh && it.runtimeSupported
-                    }
+                multiplexer = multiplexer?.takeIf { it.supportsTransport(current.transport) }
             )
     }
 
@@ -467,6 +462,5 @@ private fun AddServerForm.toProfile(): HostProfile =
         requireAuthOnConnect = requireAuthOnConnect,
         jumpHostIds = jumpHostIds,
         postConnectCommand = postConnectCommand.trim().ifBlank { null },
-        multiplexer =
-            multiplexer.takeIf { transport != Transport.Mosh && it?.runtimeSupported == true },
+        multiplexer = multiplexer.takeIf { it?.supportsTransport(transport) == true },
     )

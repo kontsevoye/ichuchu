@@ -29,6 +29,7 @@ Ichuchu is a native Android SSH client powered by libghostty, a terminal-first C
 - more than 400 themes from the official ghostty repository
 - configurable accessory keys and custom terminal actions
 - per-host post-connect actions that autorun a selected custom action after SSH/Mosh connects or reconnects
+- built-in [tmux session creation, selection and reconnect over SSH and Mosh](docs/tmux.md)
 - encrypted local import/export backups for SSH keys and server profiles
 - verified GitHub APK updates with Android confirmation and optional background checks
 - beautiful and working terminal renderer with fully working resize, scrollback, focus, modifier keys, mouse actions 

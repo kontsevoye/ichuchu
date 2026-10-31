@@ -48,6 +48,42 @@ completion, active/background tab preservation, and last-tab navigation.
 
 Native shutdown/ACK and timeout regressions: `cd zig-src && zig build test-mosh`.
 
+## tmux over SSH and Mosh
+
+`tmux_transport_server.py` runs real tmux in a temporary HOME, with a separate
+socket and configuration, plus real `mosh-server` processes. It requires
+`paramiko==4.0.0`, `/bin/zsh`, `tmux` and `mosh-server` on PATH. SSH exec requests
+are restricted to the app's discovery and generated session-startup templates.
+The interactive terminal runs a disposable `/bin/sh`; use synthetic test input
+only. It does not use personal SSH credentials, shell startup files or tmux
+sockets. Mosh keys stay in memory and the SSH channel.
+
+```sh
+/tmp/ichuchu-ssh-fixture-venv/bin/python android/test-fixtures/tmux_transport_server.py
+```
+
+The SSH listener binds to `127.0.0.1:22228`, with Mosh bound to loopback UDP
+63100–63199. The fixture accepts only the synthetic `tmux-fixture` username with
+`none` authentication. Mosh servers expire after 20 seconds without client traffic.
+Stop with Ctrl+C; cleanup kills only the fixture's tmux socket and tracked Mosh
+processes.
+
+On a disposable emulator with debug and Android test APKs installed:
+
+```sh
+adb -s <test-emulator> shell am instrument -w \
+  -e class io.github.kontsevoye.ichuchu.TmuxTransportTest \
+  -e tmuxFixture true \
+  io.github.kontsevoye.ichuchu.test/androidx.test.runner.AndroidJUnitRunner
+```
+
+The three tests cover selecting/saving tmux in the Mosh editor and the terminal
+actions for both SSH and Mosh: create, list, duplicate, switch, reconnect,
+detach and reattach. Unique shell variables prove that the same remote tmux
+session survives; terminal output proves post-connect commands run inside tmux.
+The Mosh case requires actual encrypted UDP output. Without `tmuxFixture=true`
+these tests skip. The editor test removes its synthetic database profile.
+
 ## SSH jump hosts
 
 Run the synthetic fixture using the same Paramiko environment:
