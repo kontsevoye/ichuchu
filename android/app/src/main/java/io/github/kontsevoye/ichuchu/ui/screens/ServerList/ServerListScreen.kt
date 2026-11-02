@@ -668,6 +668,12 @@ internal fun HostCard(
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                             )
+                            if (
+                                host.openMode ==
+                                    io.github.kontsevoye.ichuchu.model.HostOpenMode.Agents
+                            ) {
+                                TuiBadge(text = "agents", color = colors.accent)
+                            }
                             if (host.transport == Transport.TailscaleSSH) {
                                 TuiBadge(text = "tailscale", color = colors.accent)
                             }

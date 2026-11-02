@@ -8,7 +8,8 @@ class NativeSshBridge {
 
     fun isLoaded(): Boolean = loadError == null
 
-    fun nativeStatus(): String = if (loadError == null) {
+    fun nativeStatus(): String =
+        if (loadError == null) {
             "loaded"
         } else {
             val message = loadError.message?.takeIf { it.isNotBlank() } ?: "unknown"
@@ -70,6 +71,14 @@ class NativeSshBridge {
     ): Boolean
 
     external fun nativeChannelEof(handle: Long): Boolean
+
+    /** Process stdout/stderr must stay separate from the terminal's combined byte stream. */
+    external fun nativeReadStream(handle: Long, stream: Int, maxBytes: Int): ByteArray?
+
+    external fun nativeSendEof(handle: Long): Boolean
+
+    /** Wait for channel close after draining both streams, then return its exit status. */
+    external fun nativeFinishExec(handle: Long): Int
 
     external fun nativeResize(
         handle: Long,

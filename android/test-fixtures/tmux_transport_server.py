@@ -33,6 +33,8 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 ROOT = tempfile.TemporaryDirectory(prefix="ichuchu-tmux-fixture-")
 DIRECTORY = Path(ROOT.name)
 SOCKET = str(DIRECTORY / "tmux.sock")
+DECK_SOCKET = str(DIRECTORY / "deck-private.sock")
+DECK_ATTACH = "exec 'agent-deck' '-p' 'fixture' 'session' 'attach' 'fixture-deck-full-id'"
 TMUX = shutil.which("tmux")
 MOSH = shutil.which("mosh-server")
 if not TMUX or not MOSH:
@@ -48,6 +50,12 @@ BIN.mkdir()
     "#!/bin/sh\nexec " + shlex.join([TMUX, "-S", SOCKET, "-f", str(CONFIG)]) + ' "$@"\n'
 )
 (BIN / "tmux").chmod(0o700)
+# Deliberately use another socket and a non-Ichuchu name. The mobile client must
+# pass the full Deck identity through the generated startup command unchanged.
+(BIN / "agent-deck").write_text(
+    "#!/bin/sh\nexec " + shlex.join([TMUX, "-S", DECK_SOCKET, "attach-session", "-t", "=deck-existing"]) + "\n"
+)
+(BIN / "agent-deck").chmod(0o700)
 ENV = {
     "HOME": ROOT.name,
     "PATH": f"{BIN}:/usr/bin:/bin",
@@ -68,6 +76,8 @@ LIST = (
 
 
 def valid_startup(command):
+    if command == DECK_ATTACH:
+        return True
     names = set(re.findall(r"ichuchu-[1-9][0-9]*", command))
     if len(names) != 1:
         return False
@@ -85,6 +95,7 @@ def valid_startup(command):
 
 def cleanup():
     subprocess.run([TMUX, "-S", SOCKET, "kill-server"], capture_output=True)
+    subprocess.run([TMUX, "-S", DECK_SOCKET, "kill-server"], capture_output=True)
     for child in list(CHILDREN):
         if child.poll() is None:
             child.terminate()
@@ -244,6 +255,7 @@ def serve(sock, host_key):
 
 
 def main():
+    subprocess.run([TMUX, "-S", DECK_SOCKET, "-f", str(CONFIG), "new-session", "-d", "-s", "deck-existing"], env=ENV, cwd=ROOT.name, check=True)
     pem = Ed25519PrivateKey.generate().private_bytes(
         serialization.Encoding.PEM, serialization.PrivateFormat.OpenSSH, serialization.NoEncryption()
     )

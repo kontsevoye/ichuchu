@@ -14,9 +14,12 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import io.github.kontsevoye.ichuchu.data.repository.SettingsRepository
+import io.github.kontsevoye.ichuchu.model.HostOpenMode
 import io.github.kontsevoye.ichuchu.service.update.UpdateServices
 import io.github.kontsevoye.ichuchu.ui.screens.AddServer.AddServerScreen
 import io.github.kontsevoye.ichuchu.ui.screens.AddServer.AddServerViewModel
+import io.github.kontsevoye.ichuchu.ui.screens.agents.AgentScreen
+import io.github.kontsevoye.ichuchu.ui.screens.agents.AgentViewModel
 import io.github.kontsevoye.ichuchu.ui.screens.Keys.KeysViewModel
 import io.github.kontsevoye.ichuchu.ui.screens.ServerList.ServerListScreen
 import io.github.kontsevoye.ichuchu.ui.screens.ServerList.ServerListViewModel
@@ -103,7 +106,12 @@ private fun ProtectedNavigation(navController: NavHostController) {
                         }
                     },
                 onEditServer = { id -> navController.navigate("servers/edit/$id") },
-                onConnectServer = { id -> navController.navigate("terminal/$id") },
+                onConnectServer = { id ->
+                    val mode = allHosts.firstOrNull { it.id == id }?.openMode
+                    navController.navigate(
+                        if (mode == HostOpenMode.Agents) "agents/$id" else "terminal/$id"
+                    )
+                },
                 onDeleteServer = vm::deleteServer,
                 onOpenSettings = { navController.navigate("settings") },
             )
@@ -193,6 +201,19 @@ private fun ProtectedNavigation(navController: NavHostController) {
             val vm: AddServerViewModel =
                 viewModel(factory = AddServerViewModel.factory(application, id))
             AddServerScreen(vm = vm, onBack = { navController.popBackStack() })
+        }
+        composable(
+            route = "agents/{id}",
+            arguments = listOf(navArgument("id") { type = NavType.LongType }),
+        ) { entry ->
+            val id = requireNotNull(entry.arguments).getLong("id")
+            val vm: AgentViewModel = viewModel(factory = AgentViewModel.factory(application, id))
+            AgentScreen(
+                vm,
+                onBack = { navController.popBackStack() },
+                onEditHost = { navController.navigate("servers/edit/$id") },
+                onOpenTerminal = { navController.navigate("terminal/$id") },
+            )
         }
         composable("terminal/local") {
             val settingsRepo = SettingsRepository.getInstance(application)

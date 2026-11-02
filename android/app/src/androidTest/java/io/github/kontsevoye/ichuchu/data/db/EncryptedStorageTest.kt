@@ -4,13 +4,21 @@ import android.content.Context
 import android.content.ContextWrapper
 import androidx.room.Room
 import androidx.test.platform.app.InstrumentationRegistry
+import io.github.kontsevoye.ichuchu.model.HostOpenMode
 import io.github.kontsevoye.ichuchu.model.HostProfile
 import io.github.kontsevoye.ichuchu.model.SshKey
+import io.github.kontsevoye.ichuchu.service.agents.AgentChatState
+import io.github.kontsevoye.ichuchu.service.agents.AgentStateStore
+import io.github.kontsevoye.ichuchu.service.agents.DeckSend
+import io.github.kontsevoye.ichuchu.service.agents.DeckTimeline
 import java.io.File
 import java.security.KeyStore
 import java.util.UUID
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
 import net.zetetic.database.sqlcipher.SQLiteDatabase
+import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
@@ -52,6 +60,150 @@ class EncryptedStorageTest {
             it.execSQL("INSERT INTO secrets VALUES (1, 'SYNTHETIC_PRIVATE_KEY')")
             it.version = 11
         }
+    }
+
+    private fun isolatedContext(): Context {
+        val base = InstrumentationRegistry.getInstrumentation().targetContext
+        return object : ContextWrapper(base) {
+            override fun getApplicationContext(): Context = this
+
+            override fun getDatabasePath(name: String): File = File(directory, name)
+
+            override fun getNoBackupFilesDir(): File =
+                File(directory, "agent-keys").apply { mkdirs() }
+        }
+    }
+
+    @Test
+    fun version13MigratesToTerminalDefaultsAndCreatesEncryptedAgentCache() = runBlocking {
+        val isolated = isolatedContext()
+        val schema =
+            InstrumentationRegistry.getInstrumentation()
+                .context
+                .assets
+                .open("io.github.kontsevoye.ichuchu.data.db.AppDatabase/13.json")
+                .bufferedReader()
+                .use { JSONObject(it.readText()).getJSONObject("database") }
+        android.database.sqlite.SQLiteDatabase.openOrCreateDatabase(
+                isolated.getDatabasePath(EncryptedDatabaseFactory.LEGACY_DATABASE_NAME),
+                null,
+            )
+            .use { old ->
+                val entities = schema.getJSONArray("entities")
+                for (i in 0 until entities.length()) {
+                    val entity = entities.getJSONObject(i)
+                    fun sql(value: String) =
+                        value.replace("\${TABLE_NAME}", entity.getString("tableName"))
+                    old.execSQL(sql(entity.getString("createSql")))
+                    val indices = entity.getJSONArray("indices")
+                    for (j in 0 until indices.length()) {
+                        old.execSQL(
+                        sql(indices.getJSONObject(j).getString("createSql"))
+                    )
+                    }
+                }
+                val setup = schema.getJSONArray("setupQueries")
+                for (i in 0 until setup.length()) old.execSQL(setup.getString(i))
+                old.execSQL(
+                    "INSERT INTO host_profiles (id,name,host,port,username,password,keyPassphrase,transport,authMethod) VALUES (1,'old host','example.invalid',22,'test','','','SSH','Password')"
+                )
+                old.version = 13
+            }
+        val database =
+            Room.databaseBuilder(
+                    isolated,
+                    AppDatabase::class.java,
+                    EncryptedDatabaseFactory.DATABASE_NAME,
+                )
+                .openHelperFactory(
+                    EncryptedDatabaseFactory(
+                        isolated,
+                        DatabaseKeyStore(isolated.noBackupFilesDir, alias),
+                    )
+                )
+                .build()
+        try {
+            val host = database.hostProfileDao().getById(1)!!
+            assertEquals(HostOpenMode.Terminal, host.openMode)
+            assertEquals("default", host.deckProfile)
+            assertEquals("", host.deckExecutable)
+            val cache = AgentStateStore(database, 1, "fixture")
+            cache.saveChat("full-id", AgentChatState(draft = "SYNTHETIC_AGENT_DRAFT"))
+            assertEquals("SYNTHETIC_AGENT_DRAFT", cache.chat("full-id").draft)
+        } finally {
+            database.close()
+        }
+        assertFalse(
+            String(
+                    isolated.getDatabasePath(EncryptedDatabaseFactory.DATABASE_NAME).readBytes(),
+                    Charsets.ISO_8859_1,
+                )
+                .contains("SYNTHETIC_AGENT_DRAFT")
+        )
+    }
+
+    @Test
+    fun encryptedDraftCursorAndUnknownReceiptSurviveReopenRenameAndCacheEviction() = runBlocking {
+        val isolated = isolatedContext()
+        fun openRoom() =
+            Room.databaseBuilder(
+                    isolated,
+                    AppDatabase::class.java,
+                    EncryptedDatabaseFactory.DATABASE_NAME,
+                )
+                .openHelperFactory(
+                    EncryptedDatabaseFactory(
+                        isolated,
+                        DatabaseKeyStore(isolated.noBackupFilesDir, alias),
+                    )
+                )
+                .build()
+        val value =
+            AgentChatState(
+                timeline = DeckTimeline(emptyList(), "opaque-native-record-checkpoint", null),
+                draft = "SYNTHETIC_AGENT_DRAFT",
+                sends =
+                    listOf(
+                        DeckSend(
+                            "local-intent",
+                            "SYNTHETIC_AGENT_PROMPT",
+                            Json.parseToJsonElement("{\"state\":\"unknown\"}").jsonObject,
+                        )
+                    ),
+            )
+        val database = openRoom()
+        val hostId =
+            database
+                .hostProfileDao()
+                .insert(HostProfile(name = "fixture", host = "example.invalid", username = "test"))
+        try {
+            val cache = AgentStateStore(database, hostId, "fixture")
+            cache.saveChat("full-id", value)
+            val host = database.hostProfileDao().getById(hostId)!!
+            database.hostProfileDao().saveValidated(host.copy(name = "renamed"))
+            repeat(25) { cache.saveChat("other-$it", AgentChatState()) }
+            cache.clearHistory()
+            assertEquals(value, cache.chat("full-id"))
+        } finally {
+            database.close()
+        }
+        val reopened = openRoom()
+        try {
+            assertEquals(value, AgentStateStore(reopened, hostId, "fixture").chat("full-id"))
+            assertEquals(
+                "",
+                AgentStateStore(reopened, hostId, "different-host-key").chat("full-id").draft,
+            )
+        } finally {
+            reopened.close()
+        }
+        val bytes =
+            String(
+                isolated.getDatabasePath(EncryptedDatabaseFactory.DATABASE_NAME).readBytes(),
+                Charsets.ISO_8859_1,
+            )
+        assertFalse(bytes.contains("SYNTHETIC_AGENT_DRAFT"))
+        assertFalse(bytes.contains("SYNTHETIC_AGENT_PROMPT"))
     }
 
     private fun open(password: ByteArray) =
@@ -179,8 +331,7 @@ class EncryptedStorageTest {
     @Test
     fun committedWalRowsAreIncludedBeforePlaintextSidecarsAreRemoved() {
         seedLegacy()
-        android.database.sqlite.SQLiteDatabase.openDatabase(legacy.absolutePath, null, 0).use {
-            source ->
+        android.database.sqlite.SQLiteDatabase.openDatabase(legacy.absolutePath, null, 0).use { source ->
             assertTrue(source.enableWriteAheadLogging())
             source.execSQL("INSERT INTO secrets VALUES (2, 'SYNTHETIC_WAL_SECRET')")
             assertTrue(File(legacy.path + "-wal").length() > 0)

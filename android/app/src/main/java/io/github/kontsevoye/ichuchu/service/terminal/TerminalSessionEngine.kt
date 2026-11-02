@@ -94,12 +94,16 @@ class TerminalSessionEngine(
         val privateKeyPem: String,
         val keyPassphrase: String,
         val transport: Transport,
+        val remoteStartupCommand: String? = null,
         val postConnectCommand: String? = null,
         val multiplexer: MultiplexerType? = null,
         val multiplexerSessionName: String? = null,
         val multiplexerCreateIfMissing: Boolean = true,
     ) {
         fun multiplexerStartupCommand(): String? {
+            remoteStartupCommand?.let {
+                return it
+            }
             val type = multiplexer ?: return null
             if (!type.supportsTransport(transport)) {
                 return null
@@ -181,6 +185,7 @@ class TerminalSessionEngine(
         keyPassphrase: String,
         transport: Transport,
         sessionKey: String,
+        remoteStartupCommand: String? = null,
         postConnectCommand: String? = null,
         multiplexer: MultiplexerType? = null,
         multiplexerSessionName: String? = null,
@@ -200,6 +205,7 @@ class TerminalSessionEngine(
                 privateKeyPem = privateKeyPem,
                 keyPassphrase = keyPassphrase,
                 transport = transport,
+                remoteStartupCommand = remoteStartupCommand,
                 postConnectCommand = postConnectCommand,
                 multiplexer = multiplexer,
                 multiplexerSessionName = multiplexerSessionName,
@@ -1113,6 +1119,7 @@ class TerminalSessionEngine(
             privateKeyPem = privateKeyPem,
             keyPassphrase = keyPassphrase,
             transport = transport,
+            remoteStartupCommand = remoteStartupCommand,
             postConnectCommand = postConnectCommand,
             multiplexer = multiplexer,
             multiplexerSessionName = multiplexerSessionName,

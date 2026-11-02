@@ -14,6 +14,7 @@ import io.github.kontsevoye.ichuchu.model.AuthMethod
 import io.github.kontsevoye.ichuchu.model.HostProfile
 import io.github.kontsevoye.ichuchu.model.MultiplexerType
 import io.github.kontsevoye.ichuchu.model.Transport
+import io.github.kontsevoye.ichuchu.service.agents.DeckCommands
 import io.github.kontsevoye.ichuchu.service.terminal.SessionStatus
 import io.github.kontsevoye.ichuchu.service.terminal.TabSession
 import io.github.kontsevoye.ichuchu.service.terminal.TabSpec
@@ -100,6 +101,55 @@ class TmuxTransportTest {
 
     @Test
     fun moshActionsCreateListSwitchAndReconnectRealTmux() = runBlocking { exercise(Transport.Mosh) }
+
+    @Test
+    fun exactDeckSessionStartupSurvivesSshAndMoshReconnect() = runBlocking {
+        requireFixture()
+        val app =
+            InstrumentationRegistry.getInstrumentation().targetContext.applicationContext
+                as Application
+        val repository = TerminalSessionRepository.getInstance(app)
+        val promptJob = launch {
+            repository.hostKeyPrompt.filterNotNull().collect { repository.respondToHostKey(true) }
+        }
+        try {
+            for (transport in listOf(Transport.SSH, Transport.Mosh)) {
+                val spec =
+                    TabSpec(
+                        host = "10.0.2.2",
+                        port = 22228,
+                        username = "tmux-fixture",
+                        authMethod = AuthMethod.None,
+                        transport = transport,
+                        remoteStartupCommand =
+                            DeckCommands.attach("agent-deck", "fixture", "fixture-deck-full-id"),
+                        agentSessionId = "fixture-deck-full-id",
+                    )
+                val tab = withContext(Dispatchers.Main) { repository.openTab(spec) }
+                try {
+                    val connected =
+                        withTimeout(20_000) {
+                            tab.sessionState.first {
+                                it.status in setOf(SessionStatus.Connected, SessionStatus.Error)
+                            }
+                        }
+                    assertEquals(connected.error, SessionStatus.Connected, connected.status)
+                    val token = UUID.randomUUID().toString().replace("-", "")
+                    tab.engine.writeText(
+                        "export ICHUCHU_FIXTURE_TOKEN=$token; printf '%s%s\\n' 'SET_' '$token'\n"
+                    )
+                    awaitOutput(tab, "SET_$token")
+                    awaitReconnect(tab) { repository.reconnectTab(tab) }
+                    checkPersistedVariable(tab, token)
+                    assertEquals("fixture-deck-full-id", tab.spec.agentSessionId)
+                } finally {
+                    withContext(Dispatchers.Main) { repository.closeTab(tab.id) }
+                }
+            }
+        } finally {
+            promptJob.cancel()
+        }
+    }
 
     private suspend fun exercise(transport: Transport) = coroutineScope {
         requireFixture()

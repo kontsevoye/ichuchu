@@ -341,6 +341,30 @@ class NativeSshService(
         return bridge.nativeChannelEof(handle)
     }
 
+    /** Read one nonblocking process chunk. Empty means no data, not process completion. */
+    fun readStream(stream: Int, maxBytes: Int = 16 * 1024): ByteArray {
+        check(handle != 0L) { "Not connected" }
+        require(stream in 0..1)
+        return bridge.nativeReadStream(handle, stream, maxBytes.coerceIn(1, 64 * 1024))
+            ?: throw IllegalStateException(
+                bridge.nativeGetLastError(handle) ?: "SSH process read failed"
+            )
+    }
+
+    fun sendEof() {
+        check(handle != 0L) { "Not connected" }
+        check(bridge.nativeSendEof(handle)) {
+            bridge.nativeGetLastError(handle) ?: "SSH process stdin close failed"
+        }
+    }
+
+    fun finishExec(): Int {
+        check(handle != 0L) { "Not connected" }
+        val result = bridge.nativeFinishExec(handle)
+        check(result >= 0) { bridge.nativeGetLastError(handle) ?: "SSH process completion failed" }
+        return result
+    }
+
     fun resize(cols: Int, rows: Int, widthPx: Int, heightPx: Int) {
         if (handle == 0L) return
         if (!bridge.nativeResize(handle, cols, rows, widthPx, heightPx)) {

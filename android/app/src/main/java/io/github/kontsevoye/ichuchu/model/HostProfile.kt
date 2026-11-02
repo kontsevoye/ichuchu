@@ -22,4 +22,7 @@ data class HostProfile(
     @ColumnInfo(defaultValue = "0") val sortOrder: Long = 0L,
     val postConnectCommand: String? = null,
     @ColumnInfo(defaultValue = "NULL") val multiplexer: MultiplexerType? = null,
+    @ColumnInfo(defaultValue = "'Terminal'") val openMode: HostOpenMode = HostOpenMode.Terminal,
+    @ColumnInfo(defaultValue = "'default'") val deckProfile: String = "default",
+    @ColumnInfo(defaultValue = "''") val deckExecutable: String = "",
 )

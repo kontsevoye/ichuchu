@@ -103,6 +103,8 @@ android {
         compose = true
         buildConfig = true
     }
+    sourceSets.getByName("androidTest").assets.srcDir("$projectDir/schemas")
+
     testOptions {
         unitTests {
             // Robolectric needs the merged resources to resolve app resources in tests.

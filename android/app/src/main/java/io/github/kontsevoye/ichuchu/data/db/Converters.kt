@@ -2,10 +2,15 @@ package io.github.kontsevoye.ichuchu.data.db
 
 import androidx.room.TypeConverter
 import io.github.kontsevoye.ichuchu.model.AuthMethod
+import io.github.kontsevoye.ichuchu.model.HostOpenMode
 import io.github.kontsevoye.ichuchu.model.MultiplexerType
 import io.github.kontsevoye.ichuchu.model.Transport
 
 class Converters {
+    @TypeConverter fun fromHostOpenMode(value: HostOpenMode): String = value.name
+
+    @TypeConverter fun toHostOpenMode(value: String): HostOpenMode = HostOpenMode.valueOf(value)
+
     @TypeConverter fun fromJumpHostIds(value: List<Long>): String = value.joinToString(",")
 
     @TypeConverter

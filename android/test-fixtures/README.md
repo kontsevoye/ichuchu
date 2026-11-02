@@ -117,3 +117,32 @@ disposable test app. Without the explicit
 fixture flag the network tests are skipped. Stop the fixture after testing.
 This fixture proves nested client transport behavior, not real sshd policy or
 physical-device network roaming.
+
+## Native Agent Deck workspace
+
+`agent_deck_server.py` accepts only `deck-fixture` with synthetic `none`
+authentication on `127.0.0.1:22229`. It never executes incoming shell commands.
+It serves synthetic Deck v1.16.35-shaped session/transcript/receipt data through
+real SSH, with separate stderr warnings and forced 64 KiB rekey. Prompt bytes,
+session state and the generated host key stay in memory.
+
+```sh
+/tmp/ichuchu-ssh-fixture-venv/bin/python android/test-fixtures/agent_deck_server.py
+adb -s <test-emulator> shell am instrument -w \
+  -e class io.github.kontsevoye.ichuchu.AgentModeTest,io.github.kontsevoye.ichuchu.data.db.EncryptedStorageTest \
+  -e agentDeckFixture true \
+  io.github.kontsevoye.ichuchu.test/androidx.test.runner.AndroidJUnitRunner
+```
+
+Tests cover stdin EOF, separated streams, exit status, output larger than the SSH
+window, cancellation, CLI negotiation, session/history/send/create UI, offline
+drafts, encrypted cache eviction/reopen and a real schema 13→14 migration. Without
+the explicit flag the SSH/UI tests skip. Use only a disposable emulator.
+
+The tmux fixture also has a tiny `agent-deck` attach stub mapping one fixed full
+ID to an existing session on a **second isolated tmux socket**. The
+`exactDeckSessionStartupSurvivesSshAndMoshReconnect` test proves the generated
+command traverses the real SSH PTY and Mosh UDP startup paths and reconnects to
+the same shell state. It does not claim to run a provider or the complete real
+Deck CLI. Run it with `-e tmuxFixture true` as above; cleanup removes only the
+fixture's two tmux sockets and tracked processes.

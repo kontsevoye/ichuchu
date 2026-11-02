@@ -1,6 +1,7 @@
 package io.github.kontsevoye.ichuchu.data.backup
 
 import io.github.kontsevoye.ichuchu.model.AuthMethod
+import io.github.kontsevoye.ichuchu.model.HostOpenMode
 import io.github.kontsevoye.ichuchu.model.HostProfile
 import io.github.kontsevoye.ichuchu.model.MultiplexerType
 import io.github.kontsevoye.ichuchu.model.SshKey
@@ -26,24 +27,26 @@ data class BackupSshKey(
     val publicKeyOpenSsh: String,
     val createdAtEpochMs: Long,
 ) {
-    fun toEntity(idOverride: Long = id): SshKey = SshKey(
-        id = idOverride,
-        name = name,
-        algorithm = algorithm,
-        privateKeyPem = privateKeyPem,
-        publicKeyOpenSsh = publicKeyOpenSsh,
-        createdAtEpochMs = createdAtEpochMs,
-    )
+    fun toEntity(idOverride: Long = id): SshKey =
+        SshKey(
+            id = idOverride,
+            name = name,
+            algorithm = algorithm,
+            privateKeyPem = privateKeyPem,
+            publicKeyOpenSsh = publicKeyOpenSsh,
+            createdAtEpochMs = createdAtEpochMs,
+        )
 
     companion object {
-        fun fromEntity(key: SshKey): BackupSshKey = BackupSshKey(
-            id = key.id,
-            name = key.name,
-            algorithm = key.algorithm,
-            privateKeyPem = key.privateKeyPem,
-            publicKeyOpenSsh = key.publicKeyOpenSsh,
-            createdAtEpochMs = key.createdAtEpochMs,
-        )
+        fun fromEntity(key: SshKey): BackupSshKey =
+            BackupSshKey(
+                id = key.id,
+                name = key.name,
+                algorithm = key.algorithm,
+                privateKeyPem = key.privateKeyPem,
+                publicKeyOpenSsh = key.publicKeyOpenSsh,
+                createdAtEpochMs = key.createdAtEpochMs,
+            )
     }
 }
 
@@ -62,6 +65,9 @@ data class BackupHostProfile(
     val postConnectCommand: String?,
     val multiplexer: MultiplexerType?,
     val jumpHostIds: List<Long> = emptyList(),
+    val openMode: HostOpenMode = HostOpenMode.Terminal,
+    val deckProfile: String = "default",
+    val deckExecutable: String = "",
 ) {
     fun toEntity(idOverride: Long = id, keyIdOverride: Long? = keyId): HostProfile =
         HostProfile(
@@ -79,6 +85,9 @@ data class BackupHostProfile(
             postConnectCommand = postConnectCommand,
             multiplexer = multiplexer,
             jumpHostIds = jumpHostIds,
+            openMode = openMode,
+            deckProfile = deckProfile,
+            deckExecutable = deckExecutable,
         )
 
     companion object {
@@ -98,6 +107,9 @@ data class BackupHostProfile(
                 postConnectCommand = host.postConnectCommand,
                 multiplexer = host.multiplexer,
                 jumpHostIds = host.jumpHostIds,
+                openMode = host.openMode,
+                deckProfile = host.deckProfile,
+                deckExecutable = host.deckExecutable,
             )
     }
 }

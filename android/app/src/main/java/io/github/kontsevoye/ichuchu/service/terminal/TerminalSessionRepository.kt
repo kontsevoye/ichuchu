@@ -39,7 +39,9 @@ class TerminalSessionRepository private constructor(application: Application) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
     private val hostKeyStore =
-        HostKeyStore(appContext.getSharedPreferences(HostKeyStore.PREFS_NAME, Application.MODE_PRIVATE))
+        HostKeyStore(
+            appContext.getSharedPreferences(HostKeyStore.PREFS_NAME, Application.MODE_PRIVATE)
+        )
     private val tailscaleStatusChecker = TailscaleStatusChecker(appContext)
     private val clipboard = appContext.getSystemService(ClipboardManager::class.java)
     private val osc52ClipboardPolicy = Osc52ClipboardPolicy.Deny
@@ -80,7 +82,9 @@ class TerminalSessionRepository private constructor(application: Application) {
             .stateIn(scope, SharingStarted.Eagerly, null)
 
     val hostKeyPrompt: StateFlow<HostKeyPrompt?> =
-        combine(_preflightHostKeyPrompt, activeHostKeyPrompt) { preflight, active -> preflight ?: active }
+        combine(_preflightHostKeyPrompt, activeHostKeyPrompt) { preflight, active ->
+                preflight ?: active
+            }
             .stateIn(scope, SharingStarted.Eagerly, null)
 
     val connectedHostIds: StateFlow<Set<Long>> =
@@ -125,7 +129,8 @@ class TerminalSessionRepository private constructor(application: Application) {
                 }
                 .collect { pairs ->
                     // Completed shells should not leave dead tabs, even while the UI is away.
-                    pairs.filter { (_, state) -> state.shellExited }
+                    pairs
+                        .filter { (_, state) -> state.shellExited }
                         .forEach { (tab, _) -> closeTab(tab.id) }
                     val anyAlive =
                         pairs.any { (_, state) ->
@@ -134,7 +139,10 @@ class TerminalSessionRepository private constructor(application: Application) {
                                 state.status == SessionStatus.Reconnecting
                         }
                     val label = if (anyAlive) currentNotificationLabel() else null
-                    if (anyAlive && (!foregroundServiceRunning || foregroundNotificationLabel != label)) {
+                    if (
+                        anyAlive &&
+                            (!foregroundServiceRunning || foregroundNotificationLabel != label)
+                    ) {
                         SessionForegroundService.start(appContext, label ?: "Active session")
                         foregroundServiceRunning = true
                         foregroundNotificationLabel = label
@@ -169,9 +177,10 @@ class TerminalSessionRepository private constructor(application: Application) {
     fun openMultiplexerSessionNamesForHost(
         hostId: Long?,
         multiplexer: MultiplexerType,
-    ): List<String> = tabsForHost(hostId)
-        .filter { it.spec.multiplexer == multiplexer }
-        .mapNotNull { it.spec.multiplexerSessionName }
+    ): List<String> =
+        tabsForHost(hostId)
+            .filter { it.spec.multiplexer == multiplexer }
+            .mapNotNull { it.spec.multiplexerSessionName }
 
     suspend fun resolveMultiplexerSessionName(
         spec: TabSpec,
@@ -179,16 +188,19 @@ class TerminalSessionRepository private constructor(application: Application) {
     ): String = withPreflightEngine { engine ->
         engine.resolveMultiplexerSessionName(
             spec = spec,
-            localSessionNames = openMultiplexerSessionNamesForHost(
-                hostId = spec.hostId,
-                multiplexer = spec.multiplexer ?: MultiplexerRegistry.defaultType,
-            ),
+            localSessionNames =
+                openMultiplexerSessionNamesForHost(
+                    hostId = spec.hostId,
+                    multiplexer = spec.multiplexer ?: MultiplexerRegistry.defaultType,
+                ),
             reuseDetachedIchuchuSession = reuseDetachedIchuchuSession,
         )
     }
 
     suspend fun listMultiplexerSessions(spec: TabSpec): List<RemoteMultiplexerSession> =
-        withPreflightEngine { engine -> engine.listMultiplexerSessions(spec) }
+        withPreflightEngine { engine ->
+            engine.listMultiplexerSessions(spec)
+        }
 
     private suspend fun <T> withPreflightEngine(block: suspend (TerminalSessionEngine) -> T): T =
         preflightMutex.withLock {
@@ -243,13 +255,18 @@ class TerminalSessionRepository private constructor(application: Application) {
     }
 
     @Synchronized
-    fun holdUpdateInstallation() { updateInstallationPending = true }
+    fun holdUpdateInstallation() {
+        updateInstallationPending = true
+    }
 
     @Synchronized
-    fun endUpdateInstallation() { updateInstallationPending = false }
+    fun endUpdateInstallation() {
+        updateInstallationPending = false
+    }
 
     @Synchronized
-    fun tryOpenTab(spec: TabSpec): TabSession? = if (updateInstallationPending) null else openTab(spec)
+    fun tryOpenTab(spec: TabSpec): TabSession? =
+        if (updateInstallationPending) null else openTab(spec)
 
     @Synchronized
     fun openTab(spec: TabSpec): TabSession {
@@ -280,6 +297,7 @@ class TerminalSessionRepository private constructor(application: Application) {
             keyPassphrase = spec.keyPassphrase,
             transport = spec.transport,
             sessionKey = sessionKeyFor(tab),
+            remoteStartupCommand = spec.remoteStartupCommand,
             postConnectCommand = spec.postConnectCommand,
             multiplexer = spec.multiplexer,
             multiplexerSessionName = spec.multiplexerSessionName,
@@ -314,11 +332,14 @@ class TerminalSessionRepository private constructor(application: Application) {
         val tab = activeTab.value ?: return false
         val type = tab.spec.multiplexer ?: MultiplexerRegistry.defaultType
         MultiplexerRegistry.forType(type) ?: return false
-        val updatedSpec = tab.spec.copy(
-            multiplexer = type,
-            multiplexerSessionName = sessionName,
-            multiplexerCreateIfMissing = false,
-        )
+        val updatedSpec =
+            tab.spec.copy(
+                remoteStartupCommand = null,
+                agentSessionId = null,
+                multiplexer = type,
+                multiplexerSessionName = sessionName,
+                multiplexerCreateIfMissing = false,
+            )
         tab.spec = updatedSpec
         reconnectTab(tab)
         return true
@@ -341,6 +362,7 @@ class TerminalSessionRepository private constructor(application: Application) {
             keyPassphrase = spec.keyPassphrase,
             transport = spec.transport,
             sessionKey = sessionKeyFor(tab),
+            remoteStartupCommand = spec.remoteStartupCommand,
             postConnectCommand = spec.postConnectCommand,
             multiplexer = spec.multiplexer,
             multiplexerSessionName = spec.multiplexerSessionName,
@@ -377,7 +399,9 @@ class TerminalSessionRepository private constructor(application: Application) {
         activeTab.value?.takeIf { it.spec.transport != Transport.LocalShell }?.engine
 
     private fun sftpEngineForTab(tabId: String): TerminalSessionEngine? =
-        _tabs.value.firstOrNull { it.id == tabId && it.spec.transport != Transport.LocalShell }?.engine
+        _tabs.value
+            .firstOrNull { it.id == tabId && it.spec.transport != Transport.LocalShell }
+            ?.engine
 
     fun resize(
         cols: Int,
@@ -484,7 +508,8 @@ class TerminalSessionRepository private constructor(application: Application) {
     companion object {
         @Volatile private var instance: TerminalSessionRepository? = null
 
-        fun getInstance(application: Application): TerminalSessionRepository = instance
+        fun getInstance(application: Application): TerminalSessionRepository =
+            instance
                 ?: synchronized(this) {
                     instance
                         ?: TerminalSessionRepository(application).also { created ->

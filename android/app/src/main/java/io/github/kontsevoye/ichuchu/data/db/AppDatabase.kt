@@ -14,8 +14,8 @@ import io.github.kontsevoye.ichuchu.model.HostProfile
 import io.github.kontsevoye.ichuchu.model.SshKey
 
 @Database(
-    entities = [HostProfile::class, SshKey::class],
-    version = 13,
+    entities = [HostProfile::class, SshKey::class, AgentStateEntity::class],
+    version = 14,
     autoMigrations =
         [
             AutoMigration(from = 5, to = 6),
@@ -26,10 +26,13 @@ import io.github.kontsevoye.ichuchu.model.SshKey
             AutoMigration(from = 10, to = 11),
             AutoMigration(from = 11, to = 12),
             AutoMigration(from = 12, to = 13, spec = AppDatabase.Migration12To13::class),
+            AutoMigration(from = 13, to = 14),
         ],
 )
 @TypeConverters(Converters::class)
 abstract class AppDatabase : RoomDatabase() {
+    abstract fun agentStateDao(): AgentStateDao
+
     abstract fun hostProfileDao(): HostProfileDao
 
     abstract fun sshKeyDao(): SshKeyDao

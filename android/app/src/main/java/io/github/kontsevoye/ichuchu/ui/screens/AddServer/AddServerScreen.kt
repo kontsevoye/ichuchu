@@ -36,6 +36,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.github.kontsevoye.ichuchu.model.AuthMethod
+import io.github.kontsevoye.ichuchu.model.HostOpenMode
 import io.github.kontsevoye.ichuchu.model.MultiplexerType
 import io.github.kontsevoye.ichuchu.model.Transport
 import io.github.kontsevoye.ichuchu.ui.components.IchuButton
@@ -172,6 +173,44 @@ fun AddServerScreen(vm: AddServerViewModel, onBack: () -> Unit, modifier: Modifi
         }
 
         SectionDivider()
+
+        SectionHeader("OPEN AS")
+        IchuSegmentedControl(
+            options = HostOpenMode.entries,
+            labels = mapOf(HostOpenMode.Terminal to "terminal", HostOpenMode.Agents to "agents"),
+            selected = form.openMode,
+            onSelect = vm::updateOpenMode,
+        )
+        if (form.openMode == HostOpenMode.Agents) {
+            IchuText(
+                "Native Agent Deck sessions and chat over SSH. Interactive prompts open the same session in a terminal.",
+                style = typography.bodySmall,
+                color = colors.textSecondary,
+            )
+            IchuTextField(
+                form.deckProfile,
+                vm::updateDeckProfile,
+                label = "Agent Deck profile",
+                placeholder = "default",
+                singleLine = true,
+                autoFocus = false,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            IchuTextField(
+                form.deckExecutable,
+                vm::updateDeckExecutable,
+                label = "Agent Deck executable",
+                placeholder = "Auto-detect",
+                singleLine = true,
+                autoFocus = false,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            IchuText(
+                "Agent Deck is checked when you connect. Mosh applies to the optional terminal; the session list and chat use SSH.",
+                style = typography.bodySmall,
+                color = colors.textMuted,
+            )
+        }
 
         SectionHeader("TRANSPORT")
         IchuSegmentedControl(
@@ -411,16 +450,18 @@ fun AddServerScreen(vm: AddServerViewModel, onBack: () -> Unit, modifier: Modifi
                 )
             }
             SectionDivider()
-            MultiplexerSection(
-                selected = form.multiplexer,
-                transport = form.transport,
-                onSelect = vm::updateMultiplexer,
-            )
-            SectionDivider()
-            PostConnectActionSection(
-                command = form.postConnectCommand,
-                onCommandChange = vm::updatePostConnectCommand,
-            )
+            if (form.openMode == HostOpenMode.Terminal) {
+                MultiplexerSection(
+                    selected = form.multiplexer,
+                    transport = form.transport,
+                    onSelect = vm::updateMultiplexer,
+                )
+                SectionDivider()
+                PostConnectActionSection(
+                    command = form.postConnectCommand,
+                    onCommandChange = vm::updatePostConnectCommand,
+                )
+            }
             SectionDivider()
         }
 

@@ -22,6 +22,9 @@ data class TabSpec(
     val privateKeyPem: String = "",
     val keyPassphrase: String = "",
     val transport: Transport = Transport.SSH,
+    /** Generated command for an exact existing Agent Deck session, executed inside the PTY. */
+    val remoteStartupCommand: String? = null,
+    val agentSessionId: String? = null,
     val postConnectCommand: String? = null,
     val multiplexer: MultiplexerType? = null,
     val multiplexerSessionName: String? = null,

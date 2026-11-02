@@ -1200,6 +1200,75 @@ export fn Java_io_github_kontsevoye_ichuchu_service_ssh_NativeSshBridge_nativeCh
     return if (c.libssh2_channel_eof(channel) == 1) c.JNI_TRUE else c.JNI_FALSE;
 }
 
+// Process readers drain each stream independently; terminal reads retain their
+// combined-stream behavior. One bounded read keeps stderr from starving stdout.
+export fn Java_io_github_kontsevoye_ichuchu_service_ssh_NativeSshBridge_nativeReadStream(env: *c.JNIEnv, thiz: c.jobject, handle: c.jlong, stream: c.jint, max_bytes: c.jint) callconv(.c) c.jbyteArray {
+    _ = thiz;
+    const session = sessionFromHandle(handle) orelse return null;
+    const channel = session.channel orelse {
+        setError(session, "Exec channel not open", .{});
+        return null;
+    };
+    if (stream < 0 or stream > 1 or max_bytes < 1 or max_bytes > 65536) {
+        setError(session, "Invalid process read bounds", .{});
+        return null;
+    }
+    if (transportCancelled(session)) {
+        setError(session, "SSH process cancelled", .{});
+        return null;
+    }
+    const buf = allocator.alloc(u8, @intCast(max_bytes)) catch return null;
+    defer allocator.free(buf);
+    const rc = c.libssh2_channel_read_ex(channel, stream, @ptrCast(buf.ptr), buf.len);
+    if (rc == c.LIBSSH2_ERROR_EAGAIN) return jniNewByteArrayOrNull(env, &.{});
+    if (rc < 0) {
+        setLibssh2Error(session, "SSH process read failed", @intCast(rc));
+        return null;
+    }
+    return jniNewByteArrayOrNull(env, buf[0..@intCast(rc)]);
+}
+
+export fn Java_io_github_kontsevoye_ichuchu_service_ssh_NativeSshBridge_nativeSendEof(env: *c.JNIEnv, thiz: c.jobject, handle: c.jlong) callconv(.c) c.jboolean {
+    _ = env;
+    _ = thiz;
+    const session = sessionFromHandle(handle) orelse return c.JNI_FALSE;
+    const channel = session.channel orelse return c.JNI_FALSE;
+    session.setup_deadline_ms = nowMs() + setup_wait_timeout_ms;
+    while (true) {
+        const rc = c.libssh2_channel_send_eof(channel);
+        if (rc == 0) return c.JNI_TRUE;
+        if (rc != c.LIBSSH2_ERROR_EAGAIN) {
+            setLibssh2Error(session, "SSH stdin close failed", rc);
+            return c.JNI_FALSE;
+        }
+        if (!waitSocket(session, setup_wait_timeout_ms)) {
+            setError(session, "SSH stdin close cancelled or timed out", .{});
+            return c.JNI_FALSE;
+        }
+    }
+}
+
+export fn Java_io_github_kontsevoye_ichuchu_service_ssh_NativeSshBridge_nativeFinishExec(env: *c.JNIEnv, thiz: c.jobject, handle: c.jlong) callconv(.c) c.jint {
+    _ = env;
+    _ = thiz;
+    const session = sessionFromHandle(handle) orelse return -1;
+    const channel = session.channel orelse return -1;
+    session.setup_deadline_ms = nowMs() + setup_wait_timeout_ms;
+    // EOF alone is not an exit-status receipt: wait for the remote channel close.
+    while (true) {
+        const rc = c.libssh2_channel_wait_closed(channel);
+        if (rc == 0) return c.libssh2_channel_get_exit_status(channel);
+        if (rc != c.LIBSSH2_ERROR_EAGAIN) {
+            setLibssh2Error(session, "SSH process completion failed", rc);
+            return -1;
+        }
+        if (!waitSocket(session, setup_wait_timeout_ms)) {
+            setError(session, "SSH process completion cancelled or timed out", .{});
+            return -1;
+        }
+    }
+}
+
 export fn Java_io_github_kontsevoye_ichuchu_service_ssh_NativeSshBridge_nativeResize(env: *c.JNIEnv, thiz: c.jobject, handle: c.jlong, cols: c.jint, rows: c.jint, width_px: c.jint, height_px: c.jint) callconv(.c) c.jboolean {
     _ = env;
     _ = thiz;

@@ -1,6 +1,7 @@
 package io.github.kontsevoye.ichuchu.data.backup
 
 import io.github.kontsevoye.ichuchu.model.AuthMethod
+import io.github.kontsevoye.ichuchu.model.HostOpenMode
 import io.github.kontsevoye.ichuchu.model.HostProfile
 import io.github.kontsevoye.ichuchu.model.MultiplexerType
 import io.github.kontsevoye.ichuchu.model.SshKey
@@ -85,16 +86,18 @@ class IchuchuBackupCoreTest {
         val existing = sampleKey(id = 50L, name = "main")
         val conflicting = sampleKey(id = 1L, name = "main", privateKeyPem = "DIFFERENT")
         val identical = BackupSshKey.fromEntity(existing.copy(id = 2L))
-        val payload = BackupPayload(
-            keys = listOf(identical, BackupSshKey.fromEntity(conflicting)),
-            hosts = emptyList(),
-        )
+        val payload =
+            BackupPayload(
+                keys = listOf(identical, BackupSshKey.fromEntity(conflicting)),
+                hosts = emptyList(),
+            )
 
-        val plan = IchuchuBackupImportPlanner.planImport(
-            payload = payload,
-            existingKeys = listOf(existing),
-            existingHosts = emptyList(),
-        )
+        val plan =
+            IchuchuBackupImportPlanner.planImport(
+                payload = payload,
+                existingKeys = listOf(existing),
+                existingHosts = emptyList(),
+            )
 
         assertEquals(1, plan.keyReuseCount)
         assertEquals(1, plan.keyInsertCount)
@@ -106,16 +109,18 @@ class IchuchuBackupCoreTest {
 
     @Test
     fun importPlanNeverPreservesExportedPrimaryKeys() {
-        val payload = BackupPayload(
-            keys = listOf(BackupSshKey.fromEntity(sampleKey(id = 10L, name = "new"))),
-            hosts = listOf(BackupHostProfile.fromEntity(sampleHost(id = 10L, keyId = 10L))),
-        )
+        val payload =
+            BackupPayload(
+                keys = listOf(BackupSshKey.fromEntity(sampleKey(id = 10L, name = "new"))),
+                hosts = listOf(BackupHostProfile.fromEntity(sampleHost(id = 10L, keyId = 10L))),
+            )
 
-        val plan = IchuchuBackupImportPlanner.planImport(
-            payload = payload,
-            existingKeys = listOf(sampleKey(id = 10L, name = "local")),
-            existingHosts = listOf(sampleHost(id = 10L, name = "local-host", keyId = null)),
-        )
+        val plan =
+            IchuchuBackupImportPlanner.planImport(
+                payload = payload,
+                existingKeys = listOf(sampleKey(id = 10L, name = "local")),
+                existingHosts = listOf(sampleHost(id = 10L, name = "local-host", keyId = null)),
+            )
 
         val insertKey = plan.keyActions.filterIsInstance<KeyImportAction.Insert>().single()
         val insertHost = plan.hostActions.single()
@@ -128,16 +133,18 @@ class IchuchuBackupCoreTest {
     @Test
     fun importPlanRemapsHostsToReusedLocalKeyIds() {
         val existing = sampleKey(id = 77L, name = "main")
-        val payload = BackupPayload(
-            keys = listOf(BackupSshKey.fromEntity(existing.copy(id = 1L))),
-            hosts = listOf(BackupHostProfile.fromEntity(sampleHost(id = 2L, keyId = 1L))),
-        )
+        val payload =
+            BackupPayload(
+                keys = listOf(BackupSshKey.fromEntity(existing.copy(id = 1L))),
+                hosts = listOf(BackupHostProfile.fromEntity(sampleHost(id = 2L, keyId = 1L))),
+            )
 
-        val plan = IchuchuBackupImportPlanner.planImport(
-            payload = payload,
-            existingKeys = listOf(existing),
-            existingHosts = emptyList(),
-        )
+        val plan =
+            IchuchuBackupImportPlanner.planImport(
+                payload = payload,
+                existingKeys = listOf(existing),
+                existingHosts = emptyList(),
+            )
 
         assertEquals(77L, plan.hostActions.single().host.keyId)
         assertNull(plan.hostActions.single().keyActionIndex)
@@ -145,16 +152,18 @@ class IchuchuBackupCoreTest {
 
     @Test
     fun importPlanTracksInsertedKeyForDeferredHostRemap() {
-        val payload = BackupPayload(
-            keys = listOf(BackupSshKey.fromEntity(sampleKey(id = 1L, name = "main"))),
-            hosts = listOf(BackupHostProfile.fromEntity(sampleHost(id = 2L, keyId = 1L))),
-        )
+        val payload =
+            BackupPayload(
+                keys = listOf(BackupSshKey.fromEntity(sampleKey(id = 1L, name = "main"))),
+                hosts = listOf(BackupHostProfile.fromEntity(sampleHost(id = 2L, keyId = 1L))),
+            )
 
-        val plan = IchuchuBackupImportPlanner.planImport(
-            payload = payload,
-            existingKeys = emptyList(),
-            existingHosts = emptyList(),
-        )
+        val plan =
+            IchuchuBackupImportPlanner.planImport(
+                payload = payload,
+                existingKeys = emptyList(),
+                existingHosts = emptyList(),
+            )
 
         assertNull(plan.hostActions.single().host.keyId)
         assertEquals(0, plan.hostActions.single().keyActionIndex)
@@ -162,10 +171,11 @@ class IchuchuBackupCoreTest {
 
     @Test(expected = BackupFormatException::class)
     fun importPlanRejectsMissingKeyReferences() {
-        val payload = BackupPayload(
-            keys = emptyList(),
-            hosts = listOf(BackupHostProfile.fromEntity(sampleHost(id = 2L, keyId = 1L))),
-        )
+        val payload =
+            BackupPayload(
+                keys = emptyList(),
+                hosts = listOf(BackupHostProfile.fromEntity(sampleHost(id = 2L, keyId = 1L))),
+            )
 
         IchuchuBackupImportPlanner.planImport(
             payload = payload,
@@ -213,10 +223,7 @@ class IchuchuBackupCoreTest {
 
     @Test
     fun payloadV1DefaultsMultiplexerToNull() {
-        val v2 =
-            IchuchuBackupCodec.encodePayload(samplePayload()).let {
-                it.copyOf(it.size - Int.SIZE_BYTES)
-            }
+        val v2 = legacyV3Payload().let { it.copyOf(it.size - Int.SIZE_BYTES) }
         writeIntAt(v2, offset = Int.SIZE_BYTES, value = 1)
         val v1 = v2.copyOf(v2.size - encodedNullableStringSize(MultiplexerType.Tmux.id))
 
@@ -228,14 +235,45 @@ class IchuchuBackupCoreTest {
 
     @Test
     fun payloadV2DefaultsJumpHostsToEmpty() {
-        val bytes =
-            IchuchuBackupCodec.encodePayload(samplePayload()).let {
-                it.copyOf(it.size - Int.SIZE_BYTES)
-            }
+        val bytes = legacyV3Payload().let { it.copyOf(it.size - Int.SIZE_BYTES) }
         writeIntAt(bytes, Int.SIZE_BYTES, 2)
         val host = IchuchuBackupCodec.decodePayload(bytes).hosts.single()
         assertEquals(emptyList<Long>(), host.jumpHostIds)
         assertEquals(MultiplexerType.Tmux, host.multiplexer)
+    }
+
+    private fun legacyV3Payload(): ByteArray {
+        // One host: v4 appends mode/profile/executable after the v3 jump-host list.
+        val v4 = IchuchuBackupCodec.encodePayload(samplePayload())
+        val v4Fields =
+            listOf("Terminal", "default", "").sumOf { Int.SIZE_BYTES + it.toByteArray().size }
+        return v4.copyOf(v4.size - v4Fields).also { writeIntAt(it, Int.SIZE_BYTES, 3) }
+    }
+
+    @Test
+    fun payloadV3DefaultsToTerminalAndV4PreservesAgentSettingsThroughImport() {
+        val old = IchuchuBackupCodec.decodePayload(legacyV3Payload()).hosts.single()
+        assertEquals(HostOpenMode.Terminal, old.openMode)
+        assertEquals("default", old.deckProfile)
+        assertEquals("", old.deckExecutable)
+        val host =
+            sampleHost()
+                .copy(
+                    openMode = HostOpenMode.Agents,
+                    deckProfile = "work",
+                    deckExecutable = "/opt/homebrew/bin/agent-deck",
+                )
+        val payload = samplePayload().copy(hosts = listOf(BackupHostProfile.fromEntity(host)))
+        val decoded = IchuchuBackupCodec.decodePayload(IchuchuBackupCodec.encodePayload(payload))
+        assertEquals(payload, decoded)
+        val imported =
+            IchuchuBackupImportPlanner.planImport(decoded, emptyList(), emptyList())
+                .hostActions
+                .single()
+                .host
+        assertEquals(HostOpenMode.Agents, imported.openMode)
+        assertEquals(host.deckExecutable, imported.deckExecutable)
+        assertEquals(host.deckProfile, imported.deckProfile)
     }
 
     @Test
@@ -273,23 +311,25 @@ class IchuchuBackupCoreTest {
         assumeTrue("native backup bridge unavailable in this JVM", NativeBackupBridge().isLoaded())
     }
 
-    private fun samplePayload(): BackupPayload = BackupPayload(
-        keys = listOf(BackupSshKey.fromEntity(sampleKey())),
-        hosts = listOf(BackupHostProfile.fromEntity(sampleHost())),
-    )
+    private fun samplePayload(): BackupPayload =
+        BackupPayload(
+            keys = listOf(BackupSshKey.fromEntity(sampleKey())),
+            hosts = listOf(BackupHostProfile.fromEntity(sampleHost())),
+        )
 
     private fun sampleKey(
         id: Long = 1L,
         name: String = "main",
         privateKeyPem: String = "-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----",
-    ): SshKey = SshKey(
-        id = id,
-        name = name,
-        algorithm = "ED25519",
-        privateKeyPem = privateKeyPem,
-        publicKeyOpenSsh = "ssh-ed25519 AAAA test",
-        createdAtEpochMs = 1234L,
-    )
+    ): SshKey =
+        SshKey(
+            id = id,
+            name = name,
+            algorithm = "ED25519",
+            privateKeyPem = privateKeyPem,
+            publicKeyOpenSsh = "ssh-ed25519 AAAA test",
+            createdAtEpochMs = 1234L,
+        )
 
     private fun sampleHost(
         id: Long = 2L,
@@ -297,21 +337,22 @@ class IchuchuBackupCoreTest {
         keyId: Long? = 1L,
         authMethod: AuthMethod = AuthMethod.KeyWithPassphrase,
         transport: Transport = Transport.Mosh,
-    ): HostProfile = HostProfile(
-        id = id,
-        name = name,
-        host = "example.com",
-        port = 2222,
-        username = "salem",
-        password = "saved-password",
-        keyId = keyId,
-        keyPassphrase = "key-passphrase",
-        transport = transport,
-        authMethod = authMethod,
-        requireAuthOnConnect = true,
-        postConnectCommand = "echo hello",
-        multiplexer = MultiplexerType.Tmux,
-    )
+    ): HostProfile =
+        HostProfile(
+            id = id,
+            name = name,
+            host = "example.com",
+            port = 2222,
+            username = "salem",
+            password = "saved-password",
+            keyId = keyId,
+            keyPassphrase = "key-passphrase",
+            transport = transport,
+            authMethod = authMethod,
+            requireAuthOnConnect = true,
+            postConnectCommand = "echo hello",
+            multiplexer = MultiplexerType.Tmux,
+        )
 
     private fun encodedNullableStringSize(value: String): Int =
         1 + Int.SIZE_BYTES + value.toByteArray(Charsets.UTF_8).size
@@ -325,7 +366,8 @@ class IchuchuBackupCoreTest {
         return offset
     }
 
-    private fun readIntAt(bytes: ByteArray, offset: Int): Int = ((bytes[offset].toInt() and 0xff) shl 24) or
+    private fun readIntAt(bytes: ByteArray, offset: Int): Int =
+        ((bytes[offset].toInt() and 0xff) shl 24) or
             ((bytes[offset + 1].toInt() and 0xff) shl 16) or
             ((bytes[offset + 2].toInt() and 0xff) shl 8) or
             (bytes[offset + 3].toInt() and 0xff)

@@ -6,12 +6,13 @@ import io.github.kontsevoye.ichuchu.data.backup.BackupPayload
 import io.github.kontsevoye.ichuchu.data.backup.BackupSshKey
 import io.github.kontsevoye.ichuchu.data.backup.InvalidBackupPassphraseException
 import io.github.kontsevoye.ichuchu.model.AuthMethod
+import io.github.kontsevoye.ichuchu.model.HostOpenMode
 import io.github.kontsevoye.ichuchu.model.MultiplexerType
 import io.github.kontsevoye.ichuchu.model.Transport
 
 object IchuchuBackupCodec {
     const val FORMAT_VERSION: Int = 1
-    const val PAYLOAD_VERSION: Int = 3
+    const val PAYLOAD_VERSION: Int = 4
     const val KDF_ID_PBKDF2_HMAC_SHA1: Int = 1
     const val CIPHER_ID_AES_256_GCM: Int = 1
     const val KDF_ITERATIONS: Int = 210_000
@@ -30,9 +31,12 @@ object IchuchuBackupCodec {
         require(passphrase.isNotEmpty()) { "Backup passphrase must not be empty" }
         val plaintext = encodePayload(payload)
         return try {
-            if (!nativeBridge.isLoaded()) throw BackupFormatException("Native backup encryption is unavailable")
-            val result = nativeBridge.nativeEncrypt(plaintext, passphrase)
-                ?: throw BackupFormatException("Native backup encryption failed")
+            if (!nativeBridge.isLoaded()) {
+                throw BackupFormatException("Native backup encryption is unavailable")
+            }
+            val result =
+                nativeBridge.nativeEncrypt(plaintext, passphrase)
+                    ?: throw BackupFormatException("Native backup encryption failed")
             decodeNativeResult(result, allowInvalidPassphrase = false)
         } finally {
             plaintext.fill(0)
@@ -42,9 +46,12 @@ object IchuchuBackupCodec {
     @Throws(BackupFormatException::class, InvalidBackupPassphraseException::class)
     fun decrypt(bytes: ByteArray, passphrase: CharArray): BackupPayload {
         require(passphrase.isNotEmpty()) { "Backup passphrase must not be empty" }
-        if (!nativeBridge.isLoaded()) throw BackupFormatException("Native backup decryption is unavailable")
-        val result = nativeBridge.nativeDecrypt(bytes, passphrase)
-            ?: throw BackupFormatException("Native backup decryption failed")
+        if (!nativeBridge.isLoaded()) {
+            throw BackupFormatException("Native backup decryption is unavailable")
+        }
+        val result =
+            nativeBridge.nativeDecrypt(bytes, passphrase)
+                ?: throw BackupFormatException("Native backup decryption failed")
         val plaintext = decodeNativeResult(result, allowInvalidPassphrase = true)
         return try {
             decodePayload(plaintext)
@@ -102,10 +109,15 @@ object IchuchuBackupCodec {
             if (host.jumpHostIds.size > 3) throw BackupFormatException("Too many jump hosts")
             writer.writeInt(host.jumpHostIds.size)
             host.jumpHostIds.forEach(writer::writeLong)
+            writeStringField(host.openMode.name, "open mode")
+            writeStringField(host.deckProfile, "Agent Deck profile")
+            writeStringField(host.deckExecutable, "Agent Deck executable")
         }
 
         val encoded = writer.toByteArray()
-        if (encoded.size > MAX_BACKUP_SIZE_BYTES) throw BackupFormatException("Backup payload is too large")
+        if (encoded.size > MAX_BACKUP_SIZE_BYTES) {
+            throw BackupFormatException("Backup payload is too large")
+        }
         return encoded
     }
 
@@ -123,17 +135,21 @@ object IchuchuBackupCodec {
 
         fun <T : Enum<T>> readEnumField(label: String, values: Array<T>): T {
             val value = readStringField(label)
-            return values.firstOrNull { it.name == value } ?: throw BackupFormatException("Unknown $label")
+            return values.firstOrNull { it.name == value }
+                ?: throw BackupFormatException("Unknown $label")
         }
 
         fun readNullableMultiplexerField(label: String): MultiplexerType? {
             val value = readNullableStringField(label) ?: return null
-            return MultiplexerType.fromPersistedValue(value) ?: throw BackupFormatException("Unknown $label")
+            return MultiplexerType.fromPersistedValue(value)
+                ?: throw BackupFormatException("Unknown $label")
         }
 
         if (reader.readInt() != PAYLOAD_MAGIC) throw BackupFormatException("Invalid backup payload")
         val version = reader.readInt()
-        if (version !in 1..PAYLOAD_VERSION) throw BackupFormatException("Unsupported backup payload version")
+        if (version !in 1..PAYLOAD_VERSION) {
+            throw BackupFormatException("Unsupported backup payload version")
+        }
 
         val keyCount = reader.readPositiveInt("key count")
         validateItemCount(keyCount, "key count")
@@ -184,6 +200,16 @@ object IchuchuBackupCodec {
                         } else {
                             emptyList()
                         }
+                    val openMode =
+                        if (version >= 4) {
+                            readEnumField("open mode", enumValues<HostOpenMode>())
+                        } else {
+                            HostOpenMode.Terminal
+                        }
+                    val deckProfile =
+                        if (version >= 4) readStringField("Agent Deck profile") else "default"
+                    val deckExecutable =
+                        if (version >= 4) readStringField("Agent Deck executable") else ""
                     if (transport != Transport.LocalShell) {
                         add(
                             BackupHostProfile(
@@ -201,6 +227,9 @@ object IchuchuBackupCodec {
                                 postConnectCommand = postConnectCommand,
                                 multiplexer = multiplexer,
                                 jumpHostIds = jumpHostIds,
+                                openMode = openMode,
+                                deckProfile = deckProfile,
+                                deckExecutable = deckExecutable,
                             )
                         )
                     }
@@ -300,10 +329,11 @@ object IchuchuBackupCodec {
 
         fun readInt(): Int {
             ensureRemaining(Int.SIZE_BYTES, "int")
-            val value = ((bytes[offset].toInt() and 0xff) shl 24) or
-                ((bytes[offset + 1].toInt() and 0xff) shl 16) or
-                ((bytes[offset + 2].toInt() and 0xff) shl 8) or
-                (bytes[offset + 3].toInt() and 0xff)
+            val value =
+                ((bytes[offset].toInt() and 0xff) shl 24) or
+                    ((bytes[offset + 1].toInt() and 0xff) shl 16) or
+                    ((bytes[offset + 2].toInt() and 0xff) shl 8) or
+                    (bytes[offset + 3].toInt() and 0xff)
             offset += Int.SIZE_BYTES
             return value
         }
@@ -328,8 +358,7 @@ object IchuchuBackupCodec {
             return bytes[offset++].toInt() != 0
         }
 
-        fun readNullableLong(): Long? =
-            if (readBoolean()) readLong() else null
+        fun readNullableLong(): Long? = if (readBoolean()) readLong() else null
 
         fun readPositiveInt(label: String): Int {
             val value = readInt()

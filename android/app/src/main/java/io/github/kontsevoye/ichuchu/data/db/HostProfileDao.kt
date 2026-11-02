@@ -75,8 +75,12 @@ interface HostProfileDao {
         check(users.isEmpty()) {
             "Used as a jump host by: ${users.joinToString { it.name }}. Edit these routes first."
         }
+        clearAgentState(profile.id)
         delete(profile)
     }
+
+    @Query("DELETE FROM agent_states WHERE hostId = :hostId")
+    suspend fun clearAgentState(hostId: Long)
 
     @Query("UPDATE host_profiles SET keyId = NULL, keyPassphrase = '' WHERE keyId = :keyId")
     suspend fun clearKeyReference(keyId: Long)

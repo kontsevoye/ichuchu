@@ -11,10 +11,13 @@ import io.github.kontsevoye.ichuchu.data.repository.KeyGenerationResult
 import io.github.kontsevoye.ichuchu.data.repository.SettingsRepository
 import io.github.kontsevoye.ichuchu.data.repository.SshKeyRepository
 import io.github.kontsevoye.ichuchu.model.AuthMethod
+import io.github.kontsevoye.ichuchu.model.HostOpenMode
 import io.github.kontsevoye.ichuchu.model.HostProfile
 import io.github.kontsevoye.ichuchu.model.MultiplexerType
 import io.github.kontsevoye.ichuchu.model.SshKey
 import io.github.kontsevoye.ichuchu.model.Transport
+import io.github.kontsevoye.ichuchu.service.agents.DeckClient
+import io.github.kontsevoye.ichuchu.service.agents.SshDeckTransport
 import io.github.kontsevoye.ichuchu.service.ssh.HostKeyCheck
 import io.github.kontsevoye.ichuchu.service.ssh.HostKeyPolicy
 import io.github.kontsevoye.ichuchu.service.ssh.HostKeyStore
@@ -131,6 +134,9 @@ class AddServerViewModel(application: Application, private val hostId: Long?) : 
                         requireAuthOnConnect = profile.requireAuthOnConnect,
                         postConnectCommand = profile.postConnectCommand.orEmpty(),
                         multiplexer = profile.multiplexer,
+                        openMode = profile.openMode,
+                        deckProfile = profile.deckProfile,
+                        deckExecutable = profile.deckExecutable,
                     )
             }
         }
@@ -138,6 +144,18 @@ class AddServerViewModel(application: Application, private val hostId: Long?) : 
 
     fun updateName(name: String) {
         _form.value = _form.value.copy(name = name)
+    }
+
+    fun updateOpenMode(mode: HostOpenMode) {
+        _form.value = _form.value.copy(openMode = mode)
+    }
+
+    fun updateDeckProfile(profile: String) {
+        _form.value = _form.value.copy(deckProfile = profile)
+    }
+
+    fun updateDeckExecutable(executable: String) {
+        _form.value = _form.value.copy(deckExecutable = executable)
     }
 
     fun updateHost(host: String) {
@@ -287,38 +305,73 @@ class AddServerViewModel(application: Application, private val hostId: Long?) : 
                             val policy = HostKeyPolicy { request ->
                                 verifyTestHostKey(request, generation)
                             }
-                            NativeSshService(hostKeyPolicy = policy).use { ssh ->
-                                synchronized(testLock) {
-                                    if (generation != testGeneration) {
-                                        throw kotlinx.coroutines.CancellationException(
-                                            "Test cancelled"
-                                        )
-                                    }
-                                    testSsh = ssh
-                                }
-                                ssh.connect(
-                                    isCancelled = { generation != testGeneration },
-                                    host = profile.host,
-                                    port = profile.port,
-                                    username = profile.username,
-                                    authMethod = current.authMethod,
-                                    password = current.password,
-                                    publicKeyOpenSsh = current.publicKeyOpenSsh,
-                                    privateKeyPem = current.privateKeyPem,
-                                    keyPassphrase = current.keyPassphrase,
-                                    jumpHosts = hops,
-                                    onProgress = {
-                                        synchronized(testLock) {
-                                            if (generation == testGeneration) {
-                                                _testState.value =
-                                                    ConnectionTestState(
-                                                        ConnectionTestStatus.Running,
-                                                        it,
-                                                    )
-                                            }
+                            suspend fun connectTest(): NativeSshService {
+                                val ssh = NativeSshService(hostKeyPolicy = policy)
+                                try {
+                                    synchronized(testLock) {
+                                        if (generation != testGeneration) {
+                                            throw kotlinx.coroutines.CancellationException(
+                                                "Test cancelled"
+                                            )
                                         }
-                                    },
-                                )
+                                        testSsh = ssh
+                                    }
+                                    ssh.connect(
+                                        isCancelled = { generation != testGeneration },
+                                        host = profile.host,
+                                        port = profile.port,
+                                        username = profile.username,
+                                        authMethod = current.authMethod,
+                                        password = current.password,
+                                        publicKeyOpenSsh = current.publicKeyOpenSsh,
+                                        privateKeyPem = current.privateKeyPem,
+                                        keyPassphrase = current.keyPassphrase,
+                                        jumpHosts = hops,
+                                        onProgress = {
+                                            synchronized(testLock) {
+                                                if (generation == testGeneration) {
+                                                    _testState.value =
+                                                        ConnectionTestState(
+                                                            ConnectionTestStatus.Running,
+                                                            it,
+                                                        )
+                                                }
+                                            }
+                                        },
+                                    )
+                                    return ssh
+                                } catch (e: Throwable) {
+                                    ssh.close()
+                                    throw e
+                                }
+                            }
+                            if (current.openMode == HostOpenMode.Agents) {
+                                val deck =
+                                    DeckClient(
+                                        SshDeckTransport { connectTest() },
+                                        current.deckProfile.trim(),
+                                        current.deckExecutable.trim(),
+                                    )
+                                try {
+                                    val capabilities = deck.probe()
+                                    val sessions = deck.sessions()
+                                    "${capabilities.version} · ${sessions.size} sessions · " +
+                                        (if (capabilities.recallEnabled) {
+                                            "history enabled"
+                                        } else {
+                                            "history off"
+                                        }) +
+                                        (if (capabilities.guardedSend) {
+                                            " · chat input supported"
+                                        } else {
+                                            " · chat input requires an update"
+                                        })
+                                } finally {
+                                    deck.transport.interrupt()
+                                }
+                            } else {
+                                connectTest().close()
+                                "SSH route verified"
                             }
                         }
                     }
@@ -327,7 +380,7 @@ class AddServerViewModel(application: Application, private val hostId: Long?) : 
                 _hostKeyPrompt.value = null
                 _testState.value =
                     result.fold(
-                        { ConnectionTestState(ConnectionTestStatus.Success, "SSH route verified") },
+                        { ConnectionTestState(ConnectionTestStatus.Success, it) },
                         {
                             ConnectionTestState(
                                 ConnectionTestStatus.Error,
@@ -421,9 +474,20 @@ data class AddServerForm(
     val requireAuthOnConnect: Boolean = false,
     val postConnectCommand: String = "",
     val multiplexer: MultiplexerType? = null,
+    val openMode: HostOpenMode = HostOpenMode.Terminal,
+    val deckProfile: String = "default",
+    val deckExecutable: String = "",
 )
 
 fun AddServerForm.canSave(): Boolean {
+    if (
+        openMode == HostOpenMode.Agents &&
+            (transport == Transport.LocalShell ||
+                !deckProfile.trim().matches(Regex("[A-Za-z0-9_-]{1,64}")) ||
+                deckExecutable.any { it == '\n' || it == '\r' || it == '\u0000' })
+    ) {
+        return false
+    }
     if (name.isBlank() || host.isBlank() || username.isBlank() || port.toIntOrNull() !in 1..65535) {
         return false
     }
@@ -463,4 +527,7 @@ private fun AddServerForm.toProfile(): HostProfile =
         jumpHostIds = jumpHostIds,
         postConnectCommand = postConnectCommand.trim().ifBlank { null },
         multiplexer = multiplexer.takeIf { it?.supportsTransport(transport) == true },
+        openMode = openMode,
+        deckProfile = deckProfile.trim(),
+        deckExecutable = deckExecutable.trim(),
     )
