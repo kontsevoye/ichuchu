@@ -64,6 +64,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.github.kontsevoye.ichuchu.model.HostProfile
 import io.github.kontsevoye.ichuchu.model.Transport
+import io.github.kontsevoye.ichuchu.service.agents.AgentConnections
 import io.github.kontsevoye.ichuchu.service.terminal.TerminalSessionRepository
 import io.github.kontsevoye.ichuchu.ui.components.IchuButton
 import io.github.kontsevoye.ichuchu.ui.components.IchuButtonVariant
@@ -98,7 +99,10 @@ fun ServerListScreen(
     val haptics = LocalHapticFeedback.current
     val application = context.applicationContext as Application
     val sessionRepo = remember(application) { TerminalSessionRepository.getInstance(application) }
-    val connectedHostIds by sessionRepo.connectedHostIds.collectAsStateWithLifecycle()
+    val agents = remember(application) { AgentConnections.get(application) }
+    val terminalHostIds by sessionRepo.connectedHostIds.collectAsStateWithLifecycle()
+    val agentHosts by agents.active.collectAsStateWithLifecycle()
+    val connectedHostIds = terminalHostIds + agentHosts.keys
     val openTabs by sessionRepo.tabs.collectAsStateWithLifecycle()
     val hasOpenLocalShell = openTabs.any { it.spec.transport == Transport.LocalShell }
 
@@ -400,6 +404,7 @@ fun ServerListScreen(
         val pendingDisconnectHost = hosts.firstOrNull { it.id == pendingDisconnectHostId }
         if (pendingDisconnectHost != null) {
             val sessionCount = openTabs.count { it.spec.hostId == pendingDisconnectHost.id }
+            val hasAgentConnection = pendingDisconnectHost.id in agentHosts
             IchuDialog(
                 title = "Disconnect ${pendingDisconnectHost.name}?",
                 confirmLabel = "Disconnect",
@@ -412,13 +417,22 @@ fun ServerListScreen(
                         .map { it.id }
                         .toList()
                         .forEach(sessionRepo::closeTab)
+                    agents.disconnect(pendingDisconnectHost.id)
                     pendingDisconnectHostId = null
                 },
                 onDismiss = { pendingDisconnectHostId = null },
             ) {
                 val sessionLabel = if (sessionCount == 1) "session" else "sessions"
                 IchuText(
-                    "This closes $sessionCount $sessionLabel on this host.",
+                    buildString {
+                        if (sessionCount > 0 || !hasAgentConnection) {
+                            append("This closes $sessionCount $sessionLabel on this host.")
+                            if (hasAgentConnection) append("\n\n")
+                        }
+                        if (hasAgentConnection) {
+                            append("Disconnects agent chats. Agents keep running on this host.")
+                        }
+                    },
                     style = typography.body,
                     color = colors.warning,
                 )

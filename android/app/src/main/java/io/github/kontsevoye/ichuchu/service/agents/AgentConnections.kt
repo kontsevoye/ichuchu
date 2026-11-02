@@ -55,6 +55,10 @@ class AgentConnections private constructor(private val application: Application)
         releaseUnused(hostId)
     }
 
+    fun disconnect(hostId: Long) {
+        workspaces[hostId]?.disconnect()
+    }
+
     fun disconnectAll() = workspaces.values.toList().forEach { it.disconnect() }
 
     fun release(hostId: Long) {

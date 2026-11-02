@@ -89,6 +89,12 @@ notification has a **Disconnect** action for all agent connections; the workspac
 also has a per-host **disconnect** button. Disconnecting leaves the remote agents
 running. Process death does not silently restore authenticated connections.
 
+The main host list shows active agent connections with the same green indicator
+and **disconnect** action as SSH/Mosh terminals. Tap the host card to reopen its
+workspace. The button or swipe-to-disconnect closes this host's agent connection
+and any open terminal tabs after confirmation; other hosts stay connected. A host
+must be disconnected before it can be deleted.
+
 Allow Android notifications to receive ready, waiting, terminal-attention and
 error transitions for every session, including the chat you are currently viewing.
 The initial list and unchanged/reconnected status samples stay silent. Transition

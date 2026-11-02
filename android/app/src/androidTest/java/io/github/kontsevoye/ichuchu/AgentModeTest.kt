@@ -3,20 +3,28 @@ package io.github.kontsevoye.ichuchu
 import android.app.Application
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.test.assertContentDescriptionEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.onLast
+import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.swipeLeft
 import androidx.compose.ui.unit.Density
+import androidx.test.core.app.ActivityScenario
 import androidx.test.platform.app.InstrumentationRegistry
 import io.github.kontsevoye.ichuchu.data.db.AppDatabase
 import io.github.kontsevoye.ichuchu.model.AuthMethod
 import io.github.kontsevoye.ichuchu.model.HostOpenMode
 import io.github.kontsevoye.ichuchu.model.HostProfile
+import io.github.kontsevoye.ichuchu.service.agents.AgentConnections
 import io.github.kontsevoye.ichuchu.service.agents.DeckClient
 import io.github.kontsevoye.ichuchu.service.agents.SshDeckTransport
 import io.github.kontsevoye.ichuchu.service.ssh.NativeSshService
@@ -47,6 +55,113 @@ class AgentModeTest {
     private fun transport() = SshDeckTransport {
         NativeSshService(hostKeyPolicy = { true }).also {
             it.connect("10.0.2.2", 22229, "deck-fixture", AuthMethod.None, "")
+        }
+    }
+
+    @Test
+    fun hostMenuShowsAgentConnectionResumesChatAndDisconnects() {
+        requireFixture()
+        val app =
+            InstrumentationRegistry.getInstrumentation().targetContext.applicationContext
+                as Application
+        val db = AppDatabase.getInstance(app)
+        val profile =
+            HostProfile(
+                name = "Menu fixture Mac",
+                host = "10.0.2.2",
+                port = 22229,
+                username = "deck-fixture",
+                authMethod = AuthMethod.None,
+                openMode = HostOpenMode.Agents,
+                deckExecutable = "/fixture/agent-deck",
+            )
+        val id = runBlocking { db.hostProfileDao().insert(profile) }
+        val other = profile.copy(name = "Other fixture Mac")
+        val otherId = runBlocking { db.hostProfileDao().insert(other) }
+        val connections = AgentConnections.get(app)
+        try {
+            ActivityScenario.launch(MainActivity::class.java).use {
+                compose.waitUntil(10_000) {
+                    compose
+                        .onAllNodes(androidx.compose.ui.test.hasTestTag("host_connect_$id"))
+                        .fetchSemanticsNodes()
+                        .isNotEmpty()
+                }
+                compose
+                    .onNodeWithTag("host_connect_$id")
+                    .assertContentDescriptionEquals("Connect to ${profile.name}")
+                    .performClick()
+                val workspace = compose.runOnIdle { connections.workspace(id) }
+                compose.waitUntil(30_000) {
+                    workspace.hostKeyPrompt.value != null || workspace.state.value.online
+                }
+                compose.runOnIdle { workspace.respondToHostKey(true) }
+                compose.waitUntil(30_000) { workspace.state.value.online }
+                compose.onNodeWithText("Fix draft recovery").performClick()
+                compose.waitUntil(20_000) { workspace.state.value.chat.timeline.rows.isNotEmpty() }
+                compose.runOnIdle { workspace.updateDraft("Keep this draft when returning home") }
+                compose.onNodeWithContentDescription("Back").performClick()
+                compose.onNodeWithContentDescription("Back").performClick()
+                compose.runOnIdle { assertTrue(connections.isActive(id)) }
+                capture("agent-host-menu-connected")
+                compose
+                    .onNodeWithTag("host_connect_$id")
+                    .assertContentDescriptionEquals("Disconnect from ${profile.name}")
+                compose.onNodeWithText(profile.name).performClick()
+                compose.onNodeWithText("Fix draft recovery").performClick()
+                compose.waitUntil(20_000) { !workspace.state.value.chatLoading }
+                assertEquals(
+                    "Keep this draft when returning home",
+                    workspace.state.value.chat.draft,
+                )
+                compose.onNodeWithContentDescription("Back").performClick()
+                compose.onNodeWithContentDescription("Back").performClick()
+                // An unrelated host must stay connected when this one disconnects.
+                compose.onNodeWithTag("host_connect_$otherId").performClick()
+                val otherWorkspace = compose.runOnIdle { connections.workspace(otherId) }
+                compose.waitUntil(30_000) {
+                    otherWorkspace.hostKeyPrompt.value != null || otherWorkspace.state.value.online
+                }
+                compose.runOnIdle { otherWorkspace.respondToHostKey(true) }
+                compose.waitUntil(30_000) { otherWorkspace.state.value.online }
+                compose.onNodeWithContentDescription("Back").performClick()
+                compose.onNodeWithTag("host_card_$id").performTouchInput { longClick() }
+                compose.onNodeWithText("delete", substring = false).performClick()
+                compose.runOnIdle { assertTrue(connections.isActive(id)) }
+                assertTrue(runBlocking { db.hostProfileDao().getById(id) } != null)
+                compose.onNodeWithText("cancel", substring = false).performClick()
+                compose.onNodeWithTag("host_connect_$id").performClick()
+                compose.onNodeWithText("Cancel").performClick()
+                compose.runOnIdle { assertTrue(connections.isActive(id)) }
+                compose.onNodeWithTag("host_card_$id").performTouchInput { swipeLeft() }
+                compose
+                    .onNodeWithText("Disconnects agent chats. Agents keep running on this host.")
+                    .assertIsDisplayed()
+                capture("agent-host-menu-disconnect")
+                compose.onNodeWithText("Disconnect", substring = false).performClick()
+                compose.waitUntil(10_000) {
+                    !connections.isActive(id) && !workspace.state.value.online
+                }
+                compose
+                    .onNodeWithTag("host_connect_$id")
+                    .assertContentDescriptionEquals("Connect to ${profile.name}")
+                compose.runOnIdle { assertTrue(connections.isActive(otherId)) }
+                compose
+                    .onNodeWithTag("host_connect_$otherId")
+                    .assertContentDescriptionEquals("Disconnect from ${other.name}")
+            }
+        } finally {
+            compose.runOnIdle {
+                connections.disconnect(id)
+                connections.disconnect(otherId)
+            }
+            runBlocking {
+                for (hostId in listOf(id, otherId)) {
+                    db.hostProfileDao().getById(hostId)?.let {
+                        db.hostProfileDao().deleteUnused(it)
+                    }
+                }
+            }
         }
     }
 
