@@ -40,12 +40,25 @@ is a **global Mac setting across Deck profiles**; enabling it may index existing
 conversations. No daemon, HTTP listener, hooks, permission bypasses or transcript
 event flags are installed or enabled automatically.
 
-Projects for **New session** come from the full working-directory paths of local
-sessions in the selected profile. Equal folder names at different paths remain
-separate projects. Deck does not expose a separate project registry in this
-contract. If the profile has no known projects, create its first session on the
-Mac. Agent/model/effort/account choices come from the remote CLI; advertised
-models do not guarantee provider access.
+A fresh agent may have no transcript until its first request. This is a stable
+empty chat, with the composer available as soon as the agent is ready. The app
+checks quietly for the first transcript instead of repeatedly showing a loader.
+
+Some Codex launchers (including remote processes that do not hold a local rollout
+file) leave Deck without a native conversation ID. **Choose existing history**
+lists indexed Codex conversations in the exact project. Select the correct title,
+date and native ID, then confirm **Link selected history**. The app verifies that
+native history is readable and saves `codex-session-id` on the selected Deck
+session. It never chooses a conversation automatically from its directory.
+
+Projects for **New session** include every group from `group list --json`,
+including nested groups without active sessions. `group show --json` supplies
+each group's effective `default_path`; the group identifier itself is never used
+as a filesystem path. If a group has no default directory, enter an absolute
+project path when creating the session. Existing local session directories are
+also included, and **refresh projects** reloads the catalog. Agent/model/effort/
+account choices come from the remote CLI; advertised models do not guarantee
+provider access.
 
 Creation uses `launch --no-parent`. An optional first message becomes a saved
 draft in the exact new chat. Press **send** when ready. This keeps first-run setup
@@ -70,13 +83,29 @@ also remains unconfirmed. Cancelling a queued message is only shown as cancelled
 when Deck returns the `cancelled` outcome; `already_sent` or `not_found` do not
 prove cancellation.
 
-Synchronization runs while the workspace screen is in the foreground. Network
-failures reconnect with bounded backoff, subject to the same route and host-key
-policy. On return to the screen the app reconciles the list, history and known
-receipts. Leaving the app closes local readers; agents keep running on the Mac.
-This release does not provide background push notifications. Remote followers
-have a 55-second lease so a lost no-PTY SSH channel cannot leave an indefinite
-idle reader; healthy followers resume from their last committed cursor.
+A connected workspace keeps status monitoring active in a foreground service
+when you switch screens or background the app. The ongoing **agents connected**
+notification has a **Disconnect** action for all agent connections; the workspace
+also has a per-host **disconnect** button. Disconnecting leaves the remote agents
+running. Process death does not silently restore authenticated connections.
+
+Allow Android notifications to receive ready, waiting, terminal-attention and
+error transitions for every session, including the chat you are currently viewing.
+The initial list and unchanged/reconnected status samples stay silent. Transition
+events also catch short turns between list polls; event fingerprints prevent
+replaying the same turn. Tapping an
+alert opens that exact host and session through the app's normal lock screen.
+Lock-screen public previews omit project/session names and prompts are never
+included. Android notification-channel and battery/network restrictions still
+apply: these are local notifications from an active SSH connection, not a cloud
+push service that works after disconnection.
+
+History follows only the visible chat. Network reads reconnect with bounded
+backoff and preserve the route/host-key checks; mutations are never replayed.
+Changes requiring authentication or a new host-key decision require reopening
+the connection. On return, the app reconciles history and known receipts. Remote
+followers have a 55-second lease so a lost no-PTY SSH channel cannot leave an
+indefinite idle reader; healthy followers resume from the committed cursor.
 
 History, drafts and receipts live in the existing SQLCipher database and are
 excluded from portable host/key backups. Cache identity includes the SSH route,

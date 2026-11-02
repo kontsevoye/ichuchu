@@ -27,9 +27,13 @@ ROWS = [
     {"id": "tool-2", "kind": "edit", "title": "Update draft persistence", "summary": "AgentDraftStore.kt · +12 −3", "finished": True},
     {"id": "assistant-2", "kind": "assistant", "body": "The draft survives reconnect.\n\n```text\nBUILD SUCCESSFUL\n```"},
 ]
+HISTORY = {"fixture-existing-full-id": ROWS}
+HISTORY["fixture-native-thread"] = [{"id": "native-exact", "kind": "assistant", "body": "Exact linked Codex history"}]
+GROUPS = {"work": "/fixture/chuchu", "Empty project": "/fixture/empty-project", "parent": "", "parent/child": "/fixture/child"}
 SENDS = {}
 RECALL = True
 DROP_NEXT_LIST = False
+EVENTS = []
 
 
 def encoded(value):
@@ -76,6 +80,22 @@ def process(channel, command):
         while not channel.closed and time.monotonic() < deadline:
             time.sleep(0.02)
         return 0
+    if command.startswith("fixture-fast-turn "):
+        ident = shlex.split(command)[1]
+        with LOCK:
+            cursor = 11 + len(EVENTS)
+            EVENTS.append({"cursor": cursor, "kind": "session.transition", "session_id": ident, "data": {"from_status": "running", "to_status": "waiting", "substate": "idle-at-empty-prompt", "last_output_hash": f"turn-{cursor}"}})
+        channel.sendall(b"ok\n")
+        return 0
+    if command.startswith("fixture-status "):
+        _, ident, status = shlex.split(command)
+        with LOCK:
+            for session in SESSIONS:
+                if session["id"] == ident:
+                    session["status"] = "running" if status == "running" else "waiting"
+                    session["substate"] = {"running": "running", "ready": "idle-at-empty-prompt", "attention": "interactive-menu"}[status]
+        channel.sendall(b"ok\n")
+        return 0
     if command == "fixture-drop-next-list":
         DROP_NEXT_LIST = True
         channel.sendall(b"armed\n")
@@ -85,7 +105,18 @@ def process(channel, command):
         return 0
     if command.startswith("exec sh -c "):
         # Read the fixed lease wrapper's command, without executing that wrapper or any shell.
-        command = shlex.split(command)[3].split(" & deck_reader=", 1)[0]
+        script = shlex.split(command)[3]
+        if " & deck_reader=" not in script:
+            for line in script.splitlines():
+                if line.startswith("(exec ") and line.endswith(")"):
+                    tokens = shlex.split(line[1:-1])
+                    if tokens[:6] != ["exec", "/fixture/agent-deck", "-p", "default", "group", "show"]:
+                        return 2
+                    group = tokens[6]
+                    channel.sendall(encoded({"success": True, "path": group, "default_path": GROUPS[group]}))
+                    channel.sendall(b"\x1e")
+            return 0
+        command = script.split(" & deck_reader=", 1)[0]
     args = shlex.split(command)
     if args[:4] != ["exec", "/fixture/agent-deck", "-p", "default"]:
         channel.sendall_stderr(b"fixture refused command\n")
@@ -111,10 +142,17 @@ def process(channel, command):
         RECALL = True
         output = {"success": True}
     elif args[:2] == ["events", "stats"]:
-        output = {"enabled": True, "cursor": 10}
+        output = {"enabled": True, "cursor": 10 + len(EVENTS)}
     elif args[:2] == ["events", "follow"]:
-        channel.sendall(encoded({"cursor": 12, "kind": "session.transition", "session_id": SESSIONS[0]["id"]}))
-        time.sleep(2)
+        cursor = int(args[args.index("--after") + 1]) if "--after" in args else 0
+        deadline = time.monotonic() + 8
+        while not channel.closed and time.monotonic() < deadline:
+            with LOCK:
+                frames = [event for event in EVENTS if event["cursor"] > cursor]
+            for event in frames:
+                channel.sendall(encoded(event))
+                cursor = event["cursor"]
+            time.sleep(0.05)
     elif args[:1] == ["list"]:
         if DROP_NEXT_LIST:
             DROP_NEXT_LIST = False
@@ -122,15 +160,30 @@ def process(channel, command):
             raise EOFError("synthetic connection loss")
         with LOCK:
             output = list(SESSIONS)
+    elif args[:2] == ["group", "list"]:
+        output = {"groups": [{"name": "work", "path": "work"}, {"name": "Empty project", "path": "Empty project"}, {"name": "parent", "path": "parent", "children": [{"name": "child", "path": "parent/child"}]}]}
+    elif args[:2] == ["recall", "sessions"]:
+        output = {"success": True, "sessions": [{"native_id": "fixture-native-thread", "harness": "codex", "cwd": "/fixture/chuchu", "title": "Exact conversation", "started_at": 1793629910}]}
+    elif args[:2] == ["session", "set"]:
+        if args[3] != "codex-session-id" or args[4] not in HISTORY:
+            return 2
+        with LOCK:
+            HISTORY[args[2]] = HISTORY[args[4]]
+        output = {"success": True}
     elif args[:2] == ["recall", "timeline"]:
         with LOCK:
-            output = {"schema": "agent-deck.recall.rows/v2", "turns": list(ROWS), "through_cursor": str(len(ROWS))}
+            rows = HISTORY.get(args[2])
+            if rows is None:
+                output = {"success": False, "code": "NOT_FOUND", "error": "session has no native transcript on this machine yet"}
+                code = 1
+            else:
+                output = {"schema": "agent-deck.recall.rows/v2", "turns": list(rows), "through_cursor": str(len(rows))}
     elif args[:2] == ["recall", "follow"]:
         cursor = int(args[args.index("--after") + 1]) if "--after" in args else 0
         deadline = time.monotonic() + 8
         while not channel.closed and time.monotonic() < deadline:
             with LOCK:
-                rows = list(ROWS[cursor:])
+                rows = list(HISTORY.get(args[2], [])[cursor:])
             for row in rows:
                 cursor += 1
                 channel.sendall(encoded({"frame": "row", "row": row, "cursor": str(cursor)}))
@@ -149,8 +202,8 @@ def process(channel, command):
             output = {"send_id": ident, "session_id": args[2], "message": message,
                       "state": "landed", "landed_row_id": row_id}
             SENDS[ident] = output
-            ROWS.append({"id": row_id, "kind": "user", "body": message})
-            ROWS.append({"id": "reply-" + ident, "kind": "assistant", "body": "Synthetic reply: message received."})
+            HISTORY.setdefault(args[2], []).append({"id": row_id, "kind": "user", "body": message})
+            HISTORY.setdefault(args[2], []).append({"id": "reply-" + ident, "kind": "assistant", "body": "Synthetic reply: message received."})
     elif args[:2] == ["session", "send-status"]:
         output = SENDS.get(args[2], {"success": False, "code": "NOT_FOUND", "error": "receipt not found"})
         code = 0 if args[2] in SENDS else 1
@@ -163,6 +216,10 @@ def process(channel, command):
             return 2
         with LOCK:
             row = dict(SESSIONS[0], id=f"fixture-created-{len(SESSIONS)}", title=args[args.index("--title") + 1] if "--title" in args else "New fixture session", tool=args[args.index("-c") + 1])
+            row["status"] = "waiting"
+            row["substate"] = "idle-at-empty-prompt"
+            row["path"] = args[1]
+            row["group"] = args[args.index("--group") + 1] if "--group" in args else ""
             SESSIONS.append(row)
             output = dict(row, success=True, session_id=row["id"])
     else:

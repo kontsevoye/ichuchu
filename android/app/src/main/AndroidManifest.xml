@@ -43,6 +43,15 @@
                 android:value="Maintains a live, interactive SSH/terminal session connection while the app is backgrounded so the remote shell and running commands are not dropped. This persistent interactive network session is not covered by camera, connectedDevice, dataSync, health, location, mediaPlayback, mediaProjection, microphone, phoneCall, or remoteMessaging types." />
         </service>
 
+        <service
+            android:name=".service.agents.AgentConnectionService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Maintains user-initiated SSH connections to coding agents and monitors live session status while the app is backgrounded. The user can disconnect from the ongoing notification." />
+        </service>
+
         <receiver
             android:name=".service.update.UpdateInstallReceiver"
             android:exported="false" />

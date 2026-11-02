@@ -117,6 +117,62 @@ class DeckClient(
         )
     }
 
+    suspend fun projects(): List<DeckProject> {
+        val groups = deckGroupPaths(obj("group", "list", "--json"))
+        // One SSH exec per bounded batch. RS cannot occur unescaped inside valid JSON.
+        return groups.chunked(50).flatMap { batch ->
+            val script =
+                batch.joinToString("\n") {
+                    "(${command(listOf("group", "show", it, "--json"))})\nprintf '\\036'"
+                }
+            val result =
+                transport.execute("exec sh -c " + DeckCommands.quote(script), timeoutMs = 60_000)
+            requireSuccess(result)
+            val records = result.stdout.split('\u001e')
+            batch.mapIndexed { index, group ->
+                val detail = records.getOrNull(index)?.let(::optionalParse)
+                DeckProject(
+                    detail?.text("default_path").orEmpty().takeIf { it.startsWith('/') }.orEmpty(),
+                    group,
+                )
+            }
+        }
+    }
+
+    suspend fun nativeHistories(session: DeckSession): List<DeckNativeHistory> {
+        require(session.local && session.tool == "codex")
+        return obj(
+                "recall",
+                "sessions",
+                "--harness",
+                "codex",
+                "--project",
+                session.path,
+                "--limit",
+                "100",
+                "--json",
+            )
+            .objects("sessions")
+            .map(::DeckNativeHistory)
+            .filter { it.id.isNotBlank() && it.tool == session.tool && it.path == session.path }
+            .distinctBy { it.id }
+            .sortedByDescending { it.startedAt }
+    }
+
+    /** Explicit user selection only. A project directory is not a conversation identity. */
+    suspend fun linkHistory(session: DeckSession, history: DeckNativeHistory) {
+        require(
+            session.local &&
+                session.tool == "codex" &&
+                history.tool == session.tool &&
+                history.path == session.path
+        )
+        timeline(
+            history.id
+        ) // Verify the exact native history is readable before writing the binding.
+        obj("session", "set", session.id, "codex-session-id", history.id, "--json")
+    }
+
     suspend fun follow(id: String, cursor: String?, onFrame: suspend (JsonObject) -> Unit) {
         val args =
             listOf("recall", "follow", id, "--jsonl", "--status") +
@@ -130,6 +186,9 @@ class DeckClient(
                 (after?.let { listOf("--after", it) } ?: emptyList())
         transport.follow(DeckCommands.leasedFollow(command(args))) { onFrame(parseDeckObject(it)) }
     }
+
+    suspend fun currentEventCursor(): String =
+        obj("events", "stats", "--read-only", "--json").text("cursor").ifBlank { "0" }
 
     suspend fun enableRecall() {
         obj("config", "set", "recall.enabled", "true", "--json")

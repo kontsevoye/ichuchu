@@ -5,7 +5,10 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.platform.LocalContext
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavHostController
 import androidx.navigation.NavType
@@ -13,13 +16,13 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import io.github.kontsevoye.ichuchu.data.db.AppDatabase
 import io.github.kontsevoye.ichuchu.data.repository.SettingsRepository
 import io.github.kontsevoye.ichuchu.model.HostOpenMode
+import io.github.kontsevoye.ichuchu.service.agents.AgentConnections
 import io.github.kontsevoye.ichuchu.service.update.UpdateServices
 import io.github.kontsevoye.ichuchu.ui.screens.AddServer.AddServerScreen
 import io.github.kontsevoye.ichuchu.ui.screens.AddServer.AddServerViewModel
-import io.github.kontsevoye.ichuchu.ui.screens.agents.AgentScreen
-import io.github.kontsevoye.ichuchu.ui.screens.agents.AgentViewModel
 import io.github.kontsevoye.ichuchu.ui.screens.Keys.KeysViewModel
 import io.github.kontsevoye.ichuchu.ui.screens.ServerList.ServerListScreen
 import io.github.kontsevoye.ichuchu.ui.screens.ServerList.ServerListViewModel
@@ -28,9 +31,13 @@ import io.github.kontsevoye.ichuchu.ui.screens.Settings.SettingsScreen
 import io.github.kontsevoye.ichuchu.ui.screens.Settings.UpdateInteractionHost
 import io.github.kontsevoye.ichuchu.ui.screens.Terminal.TerminalScreen
 import io.github.kontsevoye.ichuchu.ui.screens.Terminal.TerminalViewModel
+import io.github.kontsevoye.ichuchu.ui.screens.agents.AgentScreen
+import io.github.kontsevoye.ichuchu.ui.screens.agents.AgentViewModel
 import io.github.kontsevoye.ichuchu.ui.security.AppLockGate
 import io.github.kontsevoye.ichuchu.ui.security.VerificationResult
 import io.github.kontsevoye.ichuchu.ui.security.requireUserVerification
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 @Composable
 fun ApplicationNavController() {
@@ -54,6 +61,31 @@ fun ApplicationNavController() {
 private fun ProtectedNavigation(navController: NavHostController) {
     val context = LocalContext.current
     val application = context.applicationContext as Application
+    val agents = AgentConnections.get(application)
+    val agentTarget by agents.target.collectAsStateWithLifecycle()
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    LaunchedEffect(agentTarget, lifecycle) {
+        val target = agentTarget ?: return@LaunchedEffect
+        lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            // Post to the main queue: navigation must not mutate the back stack inside
+            // Navigation 2.7's iteration while dispatching a host lifecycle event.
+            withContext(Dispatchers.Main) {
+                if (
+                    AppDatabase.getInstance(application).hostProfileDao().getById(target.hostId) !=
+                        null
+                ) {
+                    if (target.sessionId.isNotBlank()) {
+                        agents.workspace(target.hostId).requestOpenSession(target.sessionId)
+                    }
+                    navController.navigate("agents/${target.hostId}") {
+                        popUpTo("servers") { inclusive = false }
+                        launchSingleTop = true
+                    }
+                }
+                agents.consumeTarget(target)
+            }
+        }
+    }
     val updates = UpdateServices.get(application)
     val openUpdates by updates.openSettings.collectAsStateWithLifecycle()
     LaunchedEffect(openUpdates) {

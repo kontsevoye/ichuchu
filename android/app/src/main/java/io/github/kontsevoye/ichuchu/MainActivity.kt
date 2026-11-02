@@ -17,6 +17,7 @@ import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
 import io.github.kontsevoye.ichuchu.data.repository.SettingsRepository
+import io.github.kontsevoye.ichuchu.service.agents.AgentConnections
 import io.github.kontsevoye.ichuchu.service.update.UpdateNotifications
 import io.github.kontsevoye.ichuchu.service.update.UpdateServices
 import io.github.kontsevoye.ichuchu.ui.ApplicationNavController
@@ -29,9 +30,11 @@ import kotlinx.coroutines.launch
 class MainActivity : FragmentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (savedInstanceState == null) AgentConnections.get(this).acceptIntent(intent)
         val updates = UpdateServices.get(this)
-        if (intent.getBooleanExtra(UpdateNotifications.OPEN_UPDATES, false))
+        if (intent.getBooleanExtra(UpdateNotifications.OPEN_UPDATES, false)) {
             updates.requestOpenSettings()
+        }
         val settings = SettingsRepository.getInstance(this)
         lifecycleScope.launch {
             settings.hideScreenContents.collect { hideScreenContents ->
@@ -52,8 +55,10 @@ class MainActivity : FragmentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        if (intent.getBooleanExtra(UpdateNotifications.OPEN_UPDATES, false))
+        AgentConnections.get(this).acceptIntent(intent)
+        if (intent.getBooleanExtra(UpdateNotifications.OPEN_UPDATES, false)) {
             UpdateServices.get(this).requestOpenSettings()
+        }
     }
 }
 

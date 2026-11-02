@@ -122,6 +122,97 @@ class DeckProtocolTest {
     }
 
     @Test
+    fun projectsIncludeEmptyAndNestedGroupsWithoutInventingDirectories() {
+        val paths =
+            deckGroupPaths(
+                json(
+                    """{"groups":[{"path":"active"},{"path":"empty","children":[{"path":"empty/child"}]}]}"""
+                )
+            )
+        assertEquals(listOf("active", "empty", "empty/child"), paths)
+        val sessions =
+            listOf(DeckSession(json("""{"id":"live","path":"/repo","group":"active"}""")))
+        val projects =
+            mergeDeckProjects(
+                listOf(
+                    DeckProject("/repo", "active"),
+                    DeckProject("/other", "empty"),
+                    DeckProject("", "empty/child"),
+                ),
+                sessions,
+            )
+        assertEquals(3, projects.size)
+        assertEquals("", projects.single { it.group == "empty/child" }.path)
+        assertEquals(
+            2,
+            mergeDeckProjects(
+                    listOf(DeckProject("/repo", "one"), DeckProject("/repo", "two")),
+                    emptyList(),
+                )
+                .size,
+        )
+    }
+
+    @Test
+    fun notificationsBaselineDeduplicateReconnectAndIncludeEverySession() {
+        fun sample(id: String, status: String, extra: String = "") =
+            DeckSession(json("""{"id":"$id","tool":"claude","status":"$status"$extra}"""))
+        val policy = AgentStatusChanges()
+        val running = sample("a", "running")
+        val ready = sample("a", "waiting", """, "substate":"idle-at-empty-prompt"""")
+        val other = sample("b", "running")
+        assertTrue(policy.accept(listOf(running, other)).isEmpty())
+        assertEquals(listOf("a"), policy.accept(listOf(ready, other)).map { it.id })
+        assertTrue(
+            policy
+                .accept(listOf(sample("a", "running", """, "status_source":"cached""""), other))
+                .isEmpty()
+        )
+        assertTrue(policy.accept(listOf(ready, other)).isEmpty())
+        assertTrue(policy.accept(listOf(sample("a", "waiting"), other)).isEmpty())
+        assertEquals(
+            listOf("b"),
+            policy
+                .accept(
+                    listOf(ready, sample("b", "waiting", """, "substate":"interactive-menu""""))
+                )
+                .map { it.id },
+        )
+        assertEquals(listOf("a"), policy.accept(listOf(running)).map { it.id })
+        assertEquals(listOf("a"), policy.accept(listOf(ready)).map { it.id })
+        policy.reset()
+        assertTrue(policy.accept(listOf(ready)).isEmpty())
+    }
+
+    @Test
+    fun shortTurnsNotifyEvenWhenPollingNeverSeesRunningAndEventsDoNotReplay() {
+        val ready =
+            DeckSession(json("""{"id":"a","status":"waiting","substate":"idle-at-empty-prompt"}"""))
+        val running = DeckSession(json("""{"id":"a","status":"running"}"""))
+        fun event(turn: String) =
+            json(
+                """{"kind":"session.transition","session_id":"a","data":{"from_status":"running","to_status":"waiting","substate":"idle-at-empty-prompt","last_output_hash":"$turn"}}"""
+            )
+        val policy = AgentStatusChanges()
+        policy.accept(listOf(ready))
+        policy.startEventStream()
+        assertEquals("a", policy.transition(event("turn-1"), listOf(ready))?.session?.id)
+        assertNull(policy.transition(event("turn-1"), listOf(ready)))
+        assertTrue(policy.accept(listOf(ready)).isEmpty())
+        assertEquals("a", policy.transition(event("turn-2"), listOf(ready))?.session?.id)
+        policy.accept(listOf(running))
+        assertEquals(1, policy.accept(listOf(ready)).size)
+        assertTrue(requireNotNull(policy.transition(event("turn-3"), listOf(ready))).updateExisting)
+        val staleRead = policy.checkpoint()
+        assertEquals("a", policy.transition(event("turn-4"), listOf(ready))?.session?.id)
+        assertTrue(
+            "A list request started before the event cannot undo it",
+            policy.accept(listOf(running), staleRead).isEmpty(),
+        )
+        assertTrue(policy.accept(listOf(ready)).isEmpty())
+    }
+
+    @Test
     fun nonzeroSendWithReceiptIsKeptAndPromptOnlyTravelsInStdin() = runBlocking {
         val wire = FakeDeckTransport()
         val client = DeckClient(wire, "default", "/fixture/agent-deck")

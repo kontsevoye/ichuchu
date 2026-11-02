@@ -111,7 +111,45 @@ data class DeckSession(val raw: JsonObject) {
 
 data class DeckProject(val path: String, val group: String) {
     val name: String
-        get() = path.trimEnd('/').substringAfterLast('/')
+        get() = group.ifBlank { path.trimEnd('/').substringAfterLast('/') }
+
+    val label: String
+        get() = "$name · ${path.ifBlank { "choose directory" }}"
+
+    fun json(): JsonObject =
+        kotlinx.serialization.json.buildJsonObject {
+            put("path", JsonPrimitive(path))
+            put("group", JsonPrimitive(group))
+        }
+}
+
+/** Group paths are identifiers, never filesystem paths. Keep groups without a default directory. */
+fun deckGroupPaths(value: JsonObject): List<String> {
+    fun collect(groups: List<JsonObject>): List<String> =
+        groups.flatMap { listOf(it.text("path")) + collect(it.objects("children")) }
+    return collect(value.objects("groups")).filter { it.isNotBlank() }.distinct()
+}
+
+fun mergeDeckProjects(groups: List<DeckProject>, sessions: List<DeckSession>): List<DeckProject> =
+    (groups + knownDeckProjects(sessions))
+        .distinctBy { it.group to it.path }
+        .sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.name })
+
+data class DeckNativeHistory(val raw: JsonObject) {
+    val id: String
+        get() = raw.text("native_id")
+
+    val title: String
+        get() = raw.text("title").ifBlank { id }
+
+    val path: String
+        get() = raw.text("cwd")
+
+    val tool: String
+        get() = raw.text("harness")
+
+    val startedAt: Long
+        get() = raw.text("started_at").toLongOrNull() ?: 0L
 }
 
 fun knownDeckProjects(sessions: List<DeckSession>): List<DeckProject> =

@@ -128,6 +128,8 @@ session state and the generated host key stay in memory.
 
 ```sh
 /tmp/ichuchu-ssh-fixture-venv/bin/python android/test-fixtures/agent_deck_server.py
+# Android 13+ only, on this disposable emulator:
+adb -s <test-emulator> shell pm grant io.github.kontsevoye.ichuchu android.permission.POST_NOTIFICATIONS
 adb -s <test-emulator> shell am instrument -w \
   -e class io.github.kontsevoye.ichuchu.AgentModeTest,io.github.kontsevoye.ichuchu.data.db.EncryptedStorageTest \
   -e agentDeckFixture true \
@@ -136,8 +138,12 @@ adb -s <test-emulator> shell am instrument -w \
 
 Tests cover stdin EOF, separated streams, exit status, output larger than the SSH
 window, cancellation, CLI negotiation, session/history/send/create UI, offline
-drafts, encrypted cache eviction/reopen and a real schema 13→14 migration. Without
-the explicit flag the SSH/UI tests skip. Use only a disposable emulator.
+drafts, empty-history first messages, groups without sessions, explicit Codex history
+binding, background status notifications and notification navigation, encrypted
+cache eviction/reopen and a real schema 13→14 migration. The notification test
+requires notification permission and briefly opens the emulator launcher before
+returning through the notification's actual PendingIntent. Without the explicit
+flag the SSH/UI tests skip. Use only a disposable emulator.
 
 The tmux fixture also has a tiny `agent-deck` attach stub mapping one fixed full
 ID to an existing session on a **second isolated tmux socket**. The

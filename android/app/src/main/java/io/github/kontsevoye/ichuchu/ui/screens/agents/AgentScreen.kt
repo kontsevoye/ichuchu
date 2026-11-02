@@ -1,6 +1,12 @@
 package io.github.kontsevoye.ichuchu.ui.screens.agents
 
+import android.Manifest
+import android.content.Intent
+import android.os.Build
+import android.provider.Settings
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -45,11 +51,12 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import io.github.kontsevoye.ichuchu.service.agents.AgentNotifications
 import io.github.kontsevoye.ichuchu.service.agents.AgentStatus
+import io.github.kontsevoye.ichuchu.service.agents.DeckNativeHistory
 import io.github.kontsevoye.ichuchu.service.agents.DeckRow
 import io.github.kontsevoye.ichuchu.service.agents.DeckSend
 import io.github.kontsevoye.ichuchu.service.agents.flag
-import io.github.kontsevoye.ichuchu.service.agents.knownDeckProjects
 import io.github.kontsevoye.ichuchu.service.agents.text
 import io.github.kontsevoye.ichuchu.ui.components.IchuButton
 import io.github.kontsevoye.ichuchu.ui.components.IchuButtonVariant
@@ -75,9 +82,29 @@ fun AgentScreen(
     val prompt by vm.hostKeyPrompt.collectAsStateWithLifecycle()
     val owner = LocalLifecycleOwner.current
     val context = LocalContext.current
+    var notificationsEnabled by remember { mutableStateOf(AgentNotifications.enabled(context)) }
+    val notificationPermission =
+        rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
+            notificationsEnabled = AgentNotifications.enabled(context)
+        }
+    val notificationPrefs = remember { context.getSharedPreferences("agent_notifications", 0) }
+    LaunchedEffect(state.online) {
+        if (
+            state.online &&
+                Build.VERSION.SDK_INT >= 33 &&
+                !notificationsEnabled &&
+                !notificationPrefs.getBoolean("asked", false)
+        ) {
+            notificationPrefs.edit().putBoolean("asked", true).apply()
+            notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
     DisposableEffect(owner, vm) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_START) vm.setForeground(true)
+            if (event == Lifecycle.Event.ON_START) {
+                notificationsEnabled = AgentNotifications.enabled(context)
+                vm.setForeground(true)
+            }
             if (event == Lifecycle.Event.ON_STOP) vm.setForeground(false)
         }
         owner.lifecycle.addObserver(observer)
@@ -127,6 +154,37 @@ fun AgentScreen(
         { if (!vm.back()) onBack() },
         onEditHost,
         { vm.openTerminal(onOpenTerminal) },
+        notificationsEnabled,
+        {
+            if (
+                Build.VERSION.SDK_INT >= 33 &&
+                    androidx.core.content.ContextCompat.checkSelfPermission(
+                        context,
+                        Manifest.permission.POST_NOTIFICATIONS,
+                    ) != android.content.pm.PackageManager.PERMISSION_GRANTED &&
+                    !notificationPrefs.getBoolean("asked", false)
+            ) {
+                notificationPrefs.edit().putBoolean("asked", true).apply()
+                notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+            } else {
+                context.startActivity(
+                    Intent(
+                            if (Build.VERSION.SDK_INT >= 26) {
+                                Settings.ACTION_APP_NOTIFICATION_SETTINGS
+                            } else {
+                                Settings.ACTION_APPLICATION_DETAILS_SETTINGS
+                            }
+                        )
+                        .apply {
+                            if (Build.VERSION.SDK_INT >= 26) {
+                                putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+                            } else {
+                                data = android.net.Uri.parse("package:${context.packageName}")
+                            }
+                        }
+                )
+            }
+        },
     )
 }
 
@@ -137,12 +195,24 @@ private fun AgentContent(
     onBack: () -> Unit,
     onEditHost: () -> Unit,
     onTerminal: () -> Unit,
+    notificationsEnabled: Boolean,
+    onNotifications: () -> Unit,
 ) {
     val colors = IchuColors.current
     val type = IchuTypography.current
+    val compactActions = LocalDensity.current.fontScale >= 1.5f
     var recallDialog by remember { mutableStateOf(false) }
     var retryDialog by remember { mutableStateOf(false) }
     var clearDialog by remember { mutableStateOf(false) }
+    state.historyChoices?.let { choices ->
+        AgentHistoryPicker(
+            choices,
+            state.historyChoicesLoading,
+            state.linkingHistory,
+            vm::linkHistory,
+            vm::dismissHistoryChoices,
+        )
+    }
     if (recallDialog) {
         IchuDialog(
             title = "Enable chat history on this Mac?",
@@ -242,12 +312,34 @@ private fun AgentContent(
                 style = type.bodySmall,
                 color = if (state.online) colors.success else colors.textMuted,
                 modifier = Modifier.weight(1f),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
             if (!state.online && !state.connecting) {
                 AgentButton("reconnect", vm::reconnect)
             } else if (state.selectedId == null && !state.showCreate) {
-                AgentButton("refresh", vm::refresh, state.online)
+                AgentButton(
+                    if (compactActions) "↻" else "refresh",
+                    vm::refresh,
+                    state.online,
+                    "Refresh sessions",
+                )
+                AgentButton(
+                    if (compactActions) "×" else "disconnect",
+                    vm::disconnect,
+                    state.online,
+                    "Disconnect from this Mac",
+                )
             }
+        }
+        if (
+            state.online && !notificationsEnabled && state.selectedId == null && !state.showCreate
+        ) {
+            AgentButton(
+                "enable status notifications",
+                onNotifications,
+                modifier = Modifier.padding(horizontal = 16.dp),
+            )
         }
         (state.error ?: state.notice)?.let { message ->
             Row(
@@ -265,7 +357,13 @@ private fun AgentContent(
         }
         when {
             state.showCreate ->
-                AgentCreate(state, vm::updateCreate, vm::create, vm::acknowledgeCreation)
+                AgentCreate(
+                    state,
+                    vm::updateCreate,
+                    vm::create,
+                    vm::acknowledgeCreation,
+                    vm::refreshProjects,
+                )
             state.selectedId != null ->
                 AgentChat(
                     state,
@@ -278,6 +376,8 @@ private fun AgentContent(
                     vm::recoverDraft,
                     onTerminal,
                     { recallDialog = true },
+                    vm::chooseHistory,
+                    vm::retryHistory,
                 )
             else ->
                 AgentSessions(
@@ -342,12 +442,16 @@ private fun ColumnScope.AgentSessions(
             autoFocus = false,
             modifier = Modifier.fillMaxWidth(),
         )
-        IchuSegmentedControl(
-            listOf("all", "working", "attention"),
-            labels = emptyMap(),
-            selected = filter,
-            onSelect = { filter = it },
-        )
+        if (LocalDensity.current.fontScale >= 1.5f) {
+            AgentPicker("Status", filter, listOf("all", "working", "attention")) { filter = it }
+        } else {
+            IchuSegmentedControl(
+                listOf("all", "working", "attention"),
+                labels = emptyMap(),
+                selected = filter,
+                onSelect = { filter = it },
+            )
+        }
     }
     LazyColumn(
         Modifier.weight(1f),
@@ -377,7 +481,7 @@ private fun ColumnScope.AgentSessions(
                 AgentNotice(
                     if (state.sessions.isEmpty()) "No sessions yet" else "No matching sessions",
                     if (state.sessions.isEmpty()) {
-                        "Sessions from this Deck profile will appear here. Create a session on the Mac first to make its project available."
+                        "Sessions from this Deck profile will appear here. Choose a Deck project to create your first session."
                     } else {
                         "Try another filter or project name."
                     },
@@ -447,10 +551,15 @@ private fun ColumnScope.AgentCreate(
     onChange: (AgentCreateForm) -> Unit,
     onCreate: () -> Unit,
     onAcknowledge: () -> Unit,
+    onRefreshProjects: () -> Unit,
 ) {
     val form = state.create
     val capabilities = state.capabilities
-    val projects = knownDeckProjects(state.sessions)
+    val projects = state.projects
+    val selectedProject =
+        projects.firstOrNull {
+            it.group == form.group && (it.path == form.path || it.path.isBlank())
+        }
     val tool = capabilities?.tools?.firstOrNull { it.name == form.tool }
     val type = IchuTypography.current
     val colors = IchuColors.current
@@ -483,17 +592,36 @@ private fun ColumnScope.AgentCreate(
         }
         AgentPicker(
             "Project",
-            form.path,
-            projects.map { it.path },
+            selectedProject?.label.orEmpty(),
+            projects.map { it.label },
             "No known projects in this profile",
         ) {
-            onChange(form.copy(path = it))
+            projects
+                .firstOrNull { project -> project.label == it }
+                ?.let { project -> onChange(form.copy(path = project.path, group = project.group)) }
+        }
+        if (selectedProject?.path?.isBlank() == true) {
+            IchuTextField(
+                form.path,
+                { onChange(form.copy(path = it)) },
+                label = "Project directory on Mac",
+                placeholder = "/absolute/path/to/project",
+                singleLine = true,
+                autoFocus = false,
+                modifier = Modifier.fillMaxWidth(),
+            )
         }
         IchuText(
-            "Projects come from existing Deck sessions on this Mac.",
+            state.projectsError
+                ?: if (state.projectsLoading) {
+                    "Loading Deck projects…"
+                } else {
+                    "All Deck groups, including projects without sessions."
+                },
             style = type.bodySmall,
-            color = colors.textMuted,
+            color = if (state.projectsError != null) colors.warning else colors.textMuted,
         )
+        AgentButton("refresh projects", onRefreshProjects, state.online && !state.projectsLoading)
         AgentPicker("Agent", form.tool, capabilities?.tools?.map { it.name }.orEmpty()) {
             onChange(form.copy(tool = it, model = "", effort = "", account = ""))
         }
@@ -561,11 +689,72 @@ private fun ColumnScope.AgentCreate(
             state.online &&
                 !state.creating &&
                 !state.creationUnknown &&
-                projects.any { it.path == form.path } &&
+                selectedProject != null &&
+                form.path.startsWith('/') &&
                 tool != null,
             filled = true,
             modifier = Modifier.fillMaxWidth(),
         )
+    }
+}
+
+@Composable
+private fun AgentHistoryPicker(
+    choices: List<DeckNativeHistory>,
+    loading: Boolean,
+    linking: Boolean,
+    onLink: (DeckNativeHistory) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var selected by remember(choices) { mutableStateOf<DeckNativeHistory?>(null) }
+    IchuDialog(
+        title = "Choose this session's history",
+        confirmLabel =
+            if (selected == null) {
+                "Close"
+            } else if (linking) {
+                "Linking…"
+            } else {
+                "Link selected history"
+            },
+        dismissLabel = "Cancel",
+        onConfirm = { if (!linking) selected?.let(onLink) ?: onDismiss() },
+        onDismiss = { if (!linking) onDismiss() },
+    ) {
+        Column(
+            Modifier.heightIn(max = 400.dp).verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            IchuText(
+                "Choose the exact conversation running in this session. The link is saved in Agent Deck.",
+                style = IchuTypography.current.bodySmall,
+            )
+            if (loading) {
+                IchuText("Loading conversations…")
+            } else if (choices.isEmpty()) {
+                IchuText("No indexed conversations found for this project yet.")
+            }
+            choices.forEach { history ->
+                val date =
+                    java.text.DateFormat.getDateTimeInstance(
+                            java.text.DateFormat.SHORT,
+                            java.text.DateFormat.SHORT,
+                        )
+                        .format(java.util.Date(history.startedAt * 1000))
+                IchuCard(
+                    Modifier.fillMaxWidth().clickable(enabled = !linking) { selected = history }
+                ) {
+                    Column(Modifier.padding(12.dp)) {
+                        IchuText((if (selected == history) "● " else "○ ") + history.title)
+                        IchuText(
+                            "$date\n${history.id}",
+                            style = IchuTypography.current.bodySmall,
+                            color = IchuColors.current.textMuted,
+                        )
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -650,6 +839,8 @@ private fun ColumnScope.AgentChat(
     onRecover: (DeckSend) -> Unit,
     onTerminal: () -> Unit,
     onRecall: () -> Unit,
+    onChooseHistory: () -> Unit,
+    onRetryHistory: () -> Unit,
 ) {
     val colors = IchuColors.current
     val type = IchuTypography.current
@@ -743,12 +934,33 @@ private fun ColumnScope.AgentChat(
             item { IchuText("Loading history…", style = type.bodySmall, color = colors.textMuted) }
         }
         state.chatError?.let {
-            item { IchuText(it, style = type.bodySmall, color = colors.warning) }
+            item {
+                IchuText(it, style = type.bodySmall, color = colors.warning)
+                AgentButton("retry history", onRetryHistory, state.online)
+            }
+        }
+        if (state.historyMissing && session?.tool == "codex") {
+            item {
+                AgentNotice(
+                    "History is not linked yet",
+                    "New conversations appear after the first message. If this session already has a conversation, choose its history.",
+                ) {
+                    AgentButton(
+                        "choose existing history",
+                        onChooseHistory,
+                        state.online && !state.historyChoicesLoading,
+                    )
+                }
+            }
         }
         if (blocks.isEmpty() && !state.chatLoading) {
             item {
                 IchuText(
-                    "Messages and agent actions will appear here.",
+                    if (state.historyMissing && session?.tool == "claude") {
+                        "No messages yet. Send your first request when the agent is ready."
+                    } else {
+                        "Messages and agent actions will appear here."
+                    },
                     style = type.body,
                     color = colors.textMuted,
                 )

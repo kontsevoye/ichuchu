@@ -2,16 +2,13 @@ package io.github.kontsevoye.ichuchu
 
 import android.app.Application
 import androidx.compose.runtime.CompositionLocalProvider
-import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsNotEnabled
-import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onLast
 import androidx.compose.ui.test.onNodeWithText
-import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.unit.Density
@@ -97,6 +94,13 @@ class AgentModeTest {
             val receipt = deck.send(session.id, "Synthetic JNI request 世界") {}
             assertTrue(receipt.toString().contains("landed_row_id"))
             assertEquals(emptyList<Any>(), deck.queue(session.id))
+            val projects = deck.projects()
+            assertEquals(4, projects.size)
+            assertEquals(
+                "/fixture/empty-project",
+                projects.single { it.group == "Empty project" }.path,
+            )
+            assertEquals("", projects.single { it.group == "parent" }.path)
         } finally {
             wire.interrupt()
         }
@@ -172,11 +176,11 @@ class AgentModeTest {
             compose.waitUntil(15_000) { !vm.state.value.online }
             compose.waitUntil(30_000) { vm.state.value.online }
             assertEquals("Keep this offline draft", vm.state.value.chat.draft)
-            compose.runOnIdle { vm.setForeground(false) }
+            compose.runOnIdle { vm.disconnect() }
             compose.waitUntil { !vm.state.value.online }
             compose.onNodeWithText("Keep this offline draft").assertExists()
             compose.onNodeWithText("send ↑").assertIsNotEnabled()
-            compose.runOnIdle { vm.setForeground(true) }
+            compose.runOnIdle { vm.reconnect() }
             compose.waitUntil(30_000) { vm.state.value.online }
             assertEquals("Keep this offline draft", vm.state.value.chat.draft)
             val existingId = requireNotNull(vm.state.value.selectedId)
@@ -193,6 +197,22 @@ class AgentModeTest {
                 vm.showCreate()
             }
             compose.onNodeWithText("create session").assertExists()
+            compose.waitUntil(20_000) {
+                vm.state.value.projects.any { it.group == "Empty project" }
+            }
+            val selectedProject =
+                vm.state.value.projects.first {
+                    it.path == vm.state.value.create.path && it.group == vm.state.value.create.group
+                }
+            compose.onNodeWithText("${selectedProject.label}  ▾").performClick()
+            capture("agent-project-picker")
+            compose
+                .onNodeWithText(
+                    (if (selectedProject.group == "Empty project") "● " else "○ ") +
+                        "Empty project · /fixture/empty-project"
+                )
+                .performClick()
+            assertEquals("/fixture/empty-project", vm.state.value.create.path)
             capture("agent-create")
             compose.runOnIdle {
                 vm.updateCreate(
@@ -207,11 +227,242 @@ class AgentModeTest {
                 vm.state.value.selectedId?.startsWith("fixture-created-") == true &&
                     vm.state.value.chat.draft == "Draft first task"
             }
+            assertEquals("/fixture/empty-project", vm.state.value.selected?.path)
         } finally {
-            compose.runOnIdle { vm.setForeground(false) }
+            compose.runOnIdle {
+                vm.disconnect()
+                vm.setForeground(false)
+            }
             runBlocking {
                 db.hostProfileDao().getById(id)?.let { db.hostProfileDao().deleteUnused(it) }
             }
+        }
+    }
+
+    @Test
+    fun newSessionHasStableEmptyChatAndAcceptsFirstMessage() = runBlocking {
+        requireFixture()
+        val app =
+            InstrumentationRegistry.getInstrumentation().targetContext.applicationContext
+                as Application
+        val db = AppDatabase.getInstance(app)
+        val id =
+            db.hostProfileDao()
+                .insert(
+                    HostProfile(
+                        name = "Empty history fixture",
+                        host = "10.0.2.2",
+                        port = 22229,
+                        username = "deck-fixture",
+                        authMethod = AuthMethod.None,
+                        openMode = HostOpenMode.Agents,
+                        deckExecutable = "/fixture/agent-deck",
+                    )
+                )
+        val vm = AgentViewModel(app, id)
+        try {
+            compose.runOnIdle { vm.setForeground(true) }
+            compose.waitUntil(30_000) { vm.hostKeyPrompt.value != null || vm.state.value.online }
+            compose.runOnIdle { vm.respondToHostKey(true) }
+            compose.waitUntil(30_000) { vm.state.value.online }
+            compose.runOnIdle {
+                vm.showCreate()
+                vm.updateCreate(vm.state.value.create.copy(title = "Empty transcript regression"))
+                vm.create()
+            }
+            compose.waitUntil(30_000) {
+                vm.state.value.selectedId?.startsWith("fixture-created-") == true &&
+                    !vm.state.value.creating
+            }
+            delay(4000)
+            assertTrue("New session must allow its first message", vm.state.value.canSend)
+            assertEquals(
+                "A missing first transcript is an empty chat, not a loading error",
+                null,
+                vm.state.value.chatError,
+            )
+            repeat(40) {
+                assertFalse("Retry must not flash Loading history", vm.state.value.chatLoading)
+                delay(100)
+            }
+            compose.runOnIdle {
+                vm.updateDraft("First message creates the native transcript")
+                vm.send()
+            }
+            compose.waitUntil(20_000) {
+                vm.state.value.chat.timeline.rows.any {
+                    it.body == "First message creates the native transcript"
+                }
+            }
+        } finally {
+            compose.runOnIdle {
+                vm.disconnect()
+                vm.setForeground(false)
+            }
+            db.hostProfileDao().getById(id)?.let { db.hostProfileDao().deleteUnused(it) }
+        }
+    }
+
+    @Test
+    fun codexHistoryLinksOnlyAfterExplicitSelection() = runBlocking {
+        requireFixture()
+        val wire = transport()
+        try {
+            val deck = DeckClient(wire, "default", "/fixture/agent-deck")
+            deck.probe()
+            val created =
+                deck.launch(
+                    io.github.kontsevoye.ichuchu.service.agents.DeckProject(
+                        "/fixture/chuchu",
+                        "work",
+                    ),
+                    "codex",
+                    "Unlinked Codex regression",
+                    "",
+                    "",
+                    "",
+                ) {}
+            val id = (created["session_id"] as kotlinx.serialization.json.JsonPrimitive).content
+            val session = deck.sessions().single { it.id == id }
+            try {
+                deck.timeline(id)
+                org.junit.Assert.fail(
+                    "Unlinked history must not select another session by directory"
+                )
+            } catch (e: io.github.kontsevoye.ichuchu.service.agents.DeckCommandException) {
+                assertEquals("NOT_FOUND", e.code)
+            }
+            val histories = deck.nativeHistories(session)
+            assertEquals(1, histories.size)
+            deck.linkHistory(session, histories.single())
+            assertEquals("Exact linked Codex history", deck.timeline(id).rows.single().body)
+        } finally {
+            wire.interrupt()
+        }
+    }
+
+    @Test
+    fun activeConnectionNotifiesInBackgroundAndTapOpensExactChat() = runBlocking {
+        requireFixture()
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val app = instrumentation.targetContext.applicationContext as Application
+        val db = AppDatabase.getInstance(app)
+        val id =
+            db.hostProfileDao()
+                .insert(
+                    HostProfile(
+                        name = "Notification fixture Mac",
+                        host = "10.0.2.2",
+                        port = 22229,
+                        username = "deck-fixture",
+                        authMethod = AuthMethod.None,
+                        openMode = HostOpenMode.Agents,
+                        deckExecutable = "/fixture/agent-deck",
+                    )
+                )
+        val vm = AgentViewModel(app, id)
+        val manager = app.getSystemService(android.app.NotificationManager::class.java)
+        val sessionId = "fixture-existing-full-id"
+        val tag = "agent:$id:$sessionId"
+        suspend fun change(status: String) {
+            val control = transport()
+            try {
+                control.execute("fixture-status $sessionId $status")
+            } finally {
+                control.interrupt()
+            }
+        }
+        try {
+            compose.runOnIdle { vm.setForeground(true) }
+            compose.waitUntil(30_000) { vm.hostKeyPrompt.value != null || vm.state.value.online }
+            compose.runOnIdle { vm.respondToHostKey(true) }
+            compose.waitUntil(30_000) { vm.state.value.online }
+            change("running")
+            compose.waitUntil(15_000) {
+                vm.state.value.sessions.first { it.id == sessionId }.status ==
+                    io.github.kontsevoye.ichuchu.service.agents.AgentStatus.Running
+            }
+            compose.runOnIdle { vm.openSession(sessionId) }
+            change("ready")
+            compose.waitUntil(15_000) { manager.activeNotifications.any { it.tag == tag } }
+            // The currently open chat is included; another turn must also alert in the background.
+            change("running")
+            compose.waitUntil(15_000) { manager.activeNotifications.none { it.tag == tag } }
+            compose.runOnIdle { vm.setForeground(false) }
+            app.startActivity(
+                android.content
+                    .Intent(android.content.Intent.ACTION_MAIN)
+                    .addCategory(android.content.Intent.CATEGORY_HOME)
+                    .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+            )
+            assertTrue(vm.state.value.online)
+            change("attention")
+            withTimeout(20_000) {
+                while (manager.activeNotifications.none { it.tag == tag }) delay(100)
+            }
+            val notification = manager.activeNotifications.single { it.tag == tag }
+            assertTrue(
+                notification.notification.extras
+                    .getString(android.app.Notification.EXTRA_TITLE)
+                    .orEmpty()
+                    .contains("Input needed")
+            )
+            delay(6000)
+            assertEquals(
+                "Repeated polling cannot replay an alert",
+                notification.postTime,
+                manager.activeNotifications.single { it.tag == tag }.postTime,
+            )
+            compose.runOnIdle { vm.back() }
+            notification.notification.contentIntent.send()
+            compose.waitUntil(20_000) {
+                vm.state.value.selectedId == sessionId && vm.state.value.live
+            }
+            compose.waitForIdle()
+            assertTrue(vm.state.value.online)
+            change("ready")
+            compose.waitUntil(15_000) {
+                vm.state.value.sessions.first { it.id == sessionId }.status ==
+                    io.github.kontsevoye.ichuchu.service.agents.AgentStatus.Ready
+            }
+            manager.cancel(tag, 3002)
+            // No poll observes Running: only the event bus can report these short turns.
+            repeat(2) {
+                val control = transport()
+                try {
+                    control.execute("fixture-fast-turn $sessionId")
+                } finally {
+                    control.interrupt()
+                }
+                compose.waitUntil(15_000) { manager.activeNotifications.any { it.tag == tag } }
+                manager.cancel(tag, 3002)
+            }
+            // A second tap while MainActivity is already open exercises onNewIntent and
+            // replacement of a navigation owner without dropping the shared connection.
+            compose.runOnIdle { vm.back() }
+            notification.notification.contentIntent.send()
+            compose.waitUntil(20_000) {
+                vm.state.value.selectedId == sessionId && vm.state.value.live
+            }
+            compose.waitForIdle()
+            instrumentation.runOnMainSync { vm.disconnect() }
+            withTimeout(10_000) {
+                while (manager.activeNotifications.any { it.id == 3001 }) delay(100)
+            }
+            assertFalse(vm.state.value.online)
+        } finally {
+            instrumentation.runOnMainSync {
+                vm.disconnect()
+                vm.setForeground(false)
+                androidx.test.runner.lifecycle.ActivityLifecycleMonitorRegistry.getInstance()
+                    .getActivitiesInStage(androidx.test.runner.lifecycle.Stage.RESUMED)
+                    .toList()
+                    .filterIsInstance<MainActivity>()
+                    .forEach { it.finish() }
+            }
+            change("ready")
+            manager.cancel(tag, 3002)
+            db.hostProfileDao().getById(id)?.let { db.hostProfileDao().deleteUnused(it) }
         }
     }
 
@@ -220,7 +471,9 @@ class AgentModeTest {
         InstrumentationRegistry.getInstrumentation().waitForIdleSync()
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val file = java.io.File(instrumentation.targetContext.cacheDir, "$name.png")
-        compose.onRoot().captureToImage().asAndroidBitmap().let { bitmap ->
+        // Capture the actual display so platform dialogs use their own window coordinates.
+        android.os.SystemClock.sleep(100)
+        requireNotNull(instrumentation.uiAutomation.takeScreenshot()).let { bitmap ->
             file.outputStream().use {
                 bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it)
             }

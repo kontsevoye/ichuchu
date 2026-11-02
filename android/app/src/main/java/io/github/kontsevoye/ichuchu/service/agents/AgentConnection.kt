@@ -28,6 +28,7 @@ class AgentConnection(
     private val application: Application,
     private val db: AppDatabase,
     private val hostId: Long,
+    private val canPrompt: () -> Boolean = { true },
 ) {
     lateinit var host: HostProfile
         private set
@@ -165,6 +166,7 @@ class AgentConnection(
                     request.keyBytes,
                 )
             if (check != HostKeyCheck.Match) {
+                check(canPrompt()) { "Open this connection to verify its SSH host key" }
                 val pending = CompletableDeferred<Boolean>()
                 decision = pending
                 hostKeyPrompt.value =
