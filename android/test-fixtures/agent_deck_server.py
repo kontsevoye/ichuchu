@@ -5,6 +5,7 @@ All messages, host keys and session state are synthetic and held in memory.
 """
 
 import io
+import hashlib
 import json
 import shlex
 import socket
@@ -34,6 +35,7 @@ SENDS = {}
 RECALL = True
 DROP_NEXT_LIST = False
 EVENTS = []
+UPLOADS = {}
 
 
 def encoded(value):
@@ -63,6 +65,28 @@ class Server(paramiko.ServerInterface):
 def process(channel, command):
     global RECALL, DROP_NEXT_LIST
     channel.settimeout(15)
+    upload = shlex.split(command)
+    if upload[:3] == ["exec", "sh", "-c"] and upload[3].startswith("# ichuchu-upload-v1\n"):
+        size = int(upload[-1])
+        if not 0 <= size <= 20 * 1024 * 1024:
+            return 2
+        body = bytearray()
+        while data := channel.recv(8192):
+            body.extend(data)
+            if len(body) > size:
+                return 1
+        if len(body) != size:
+            return 1
+        with LOCK:
+            path = f"/tmp/ichuchu-attachment.fixture-{len(UPLOADS)}/{upload[-2]}"
+            UPLOADS[path] = bytes(body)
+        channel.sendall((path + "\n").encode())
+        return 0
+    if upload[:1] == ["fixture-upload-info"]:
+        with LOCK:
+            body = UPLOADS.get(upload[1])
+        channel.sendall(encoded({"bytes": len(body), "sha256": hashlib.sha256(body).hexdigest()} if body is not None else {}))
+        return 0
     if command == "fixture-streams":
         body = b""
         while data := channel.recv(8192):

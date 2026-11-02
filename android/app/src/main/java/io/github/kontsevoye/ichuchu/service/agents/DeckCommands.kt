@@ -35,6 +35,28 @@ object DeckCommands {
     fun attach(executable: String, profile: String, id: String): String =
         command(executable, profile, "session", "attach", id)
 
+    /** Owner-only, unique staging directory; partial transfers are removed by the exit trap. */
+    fun uploadFile(name: String, size: Long): String {
+        require(name.matches(Regex("[A-Za-z0-9][A-Za-z0-9._-]{0,119}")))
+        require(size in 0..AGENT_ATTACHMENT_LIMIT)
+        val script =
+            """
+            # ichuchu-upload-v1
+            set -eu
+            umask 077
+            upload_dir=${'$'}(mktemp -d "${'$'}{TMPDIR:-/tmp}/ichuchu-attachment.XXXXXXXX")
+            upload_file="${'$'}upload_dir/${'$'}1"
+            trap 'rm -f "${'$'}upload_file"; rmdir "${'$'}upload_dir"' EXIT
+            trap 'exit 1' HUP INT TERM
+            cat > "${'$'}upload_file"
+            test "${'$'}(wc -c < "${'$'}upload_file" | tr -d ' ')" = "${'$'}2"
+            printf '%s\n' "${'$'}upload_file"
+            trap - EXIT
+            """
+                .trimIndent()
+        return "exec sh -c ${quote(script)} sh ${quote(name)} $size"
+    }
+
     /** A disconnected no-PTY reader must not leave a permanent remote follower behind. */
     fun leasedFollow(command: String): String {
         val script =

@@ -232,6 +232,29 @@ class DeckClient(
 
     suspend fun sendStatus(id: String): JsonObject = obj("session", "send-status", id, "--json")
 
+    suspend fun uploadFile(name: String, file: java.io.File, onProgress: (Long) -> Unit): String {
+        val safe =
+            "file-" +
+                name.replace(Regex("[^A-Za-z0-9._-]"), "_").take(100).trimStart('.', '-').ifBlank {
+                    "file"
+                }
+        val result =
+            file.inputStream().use {
+                transport.upload(
+                    DeckCommands.uploadFile(safe, file.length()),
+                    it,
+                    file.length(),
+                    onProgress,
+                )
+            }
+        requireSuccess(result)
+        return result.stdout.trim().also {
+            require(it.startsWith('/') && '\n' !in it && '\r' !in it && '\u0000' !in it) {
+                "Host returned an invalid uploaded-file path"
+            }
+        }
+    }
+
     suspend fun queue(id: String): List<JsonObject> =
         obj("session", "queue", "list", id, "--json").objects("queue")
 

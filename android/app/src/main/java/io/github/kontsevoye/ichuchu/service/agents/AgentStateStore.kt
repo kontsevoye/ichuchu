@@ -13,6 +13,7 @@ data class AgentChatState(
     val timeline: DeckTimeline = DeckTimeline(emptyList(), null, null),
     val draft: String = "",
     val sends: List<DeckSend> = emptyList(),
+    val attachments: List<AgentAttachment> = emptyList(),
 )
 
 /**
@@ -32,8 +33,12 @@ class AgentStateStore(private val db: AppDatabase, private val hostId: Long, val
                     it.text("localId"),
                     it.text("text"),
                     it["receipt"] as? JsonObject ?: JsonObject(emptyMap()),
+                    it.text("anchorRowId").ifBlank { null },
+                    it.text("createdAt").toLongOrNull() ?: 0,
+                    it.objects("attachments").map(AgentAttachment::parse),
                 )
             },
+            data.objects("attachments").map(AgentAttachment::parse),
         )
     }
 
@@ -63,12 +68,17 @@ class AgentStateStore(private val db: AppDatabase, private val hostId: Long, val
                                 put("localId", send.localId)
                                 put("text", send.text)
                                 put("receipt", send.receipt)
+                                send.anchorRowId?.let { put("anchorRowId", it) }
+                                put("createdAt", send.createdAt)
+                                put("attachments", JsonArray(send.attachments.map { it.json() }))
                             }
                         }
                     ),
                 )
+                put("attachments", JsonArray(state.attachments.map { it.json() }))
             },
             state.draft.isNotBlank() ||
+                state.attachments.isNotEmpty() ||
                 state.sends.any { it.state !in setOf("landed", "cancelled") },
         )
     }

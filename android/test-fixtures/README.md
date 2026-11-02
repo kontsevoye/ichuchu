@@ -128,6 +128,10 @@ session state and the generated host key stay in memory.
 
 ```sh
 /tmp/ichuchu-ssh-fixture-venv/bin/python android/test-fixtures/agent_deck_server.py
+# In another shell, create synthetic picker inputs and copy only to this emulator:
+attachment_fixtures=$(mktemp -d)
+python3 android/test-fixtures/create_agent_attachments.py "$attachment_fixtures"
+adb -s <test-emulator> push "$attachment_fixtures/." /sdcard/Download/
 # Android 13+ only, on this disposable emulator:
 adb -s <test-emulator> shell pm grant io.github.kontsevoye.ichuchu android.permission.POST_NOTIFICATIONS
 adb -s <test-emulator> shell am instrument -w \
@@ -140,7 +144,13 @@ Tests cover stdin EOF, separated streams, exit status, output larger than the SS
 window, cancellation, CLI negotiation, session/history/send/create UI, offline
 drafts, empty-history first messages, groups without sessions, explicit Codex history
 binding, background status notifications and notification navigation, encrypted
-cache eviction/reopen and a real schema 13→14 migration. The notification test
+cache eviction/reopen and a real schema 13→14 migration. Attachment acceptance uses
+the actual Android document picker, image and arbitrary binary uploads, size limits,
+exact binary hashes across rekey, removal, reconnect persistence and attachment-only
+sending. The fixture holds uploaded bytes in memory and never executes the upload
+script; separate JVM tests run that script in temporary directories under sh/zsh,
+checking byte preservation, owner-only permissions and incomplete-upload cleanup.
+The notification test
 requires notification permission and briefly opens the emulator launcher before
 returning through the notification's actual PendingIntent. Without the explicit
 flag the SSH/UI tests skip. Use only a disposable emulator.

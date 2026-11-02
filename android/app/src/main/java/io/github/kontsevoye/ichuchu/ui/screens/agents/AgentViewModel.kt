@@ -39,6 +39,12 @@ class AgentViewModel(application: Application, val hostId: Long) : AndroidViewMo
 
     fun send() = workspace.send()
 
+    fun attachFiles(id: String, uris: List<android.net.Uri>) = workspace.attachFiles(id, uris)
+
+    fun cancelUpload() = workspace.cancelUpload()
+
+    fun removeAttachment(id: String) = workspace.removeAttachment(id)
+
     fun cancel(send: DeckSend) = workspace.cancel(send)
 
     fun recoverDraft(send: DeckSend) = workspace.recoverDraft(send)

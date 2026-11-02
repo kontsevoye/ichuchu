@@ -1,7 +1,10 @@
 package io.github.kontsevoye.ichuchu.ui.screens.agents
 
 import android.app.Application
+import android.net.Uri
 import io.github.kontsevoye.ichuchu.data.db.AppDatabase
+import io.github.kontsevoye.ichuchu.service.agents.AGENT_ATTACHMENT_COUNT
+import io.github.kontsevoye.ichuchu.service.agents.AgentAttachment
 import io.github.kontsevoye.ichuchu.service.agents.AgentChatState
 import io.github.kontsevoye.ichuchu.service.agents.AgentConnection
 import io.github.kontsevoye.ichuchu.service.agents.AgentConnections
@@ -19,9 +22,11 @@ import io.github.kontsevoye.ichuchu.service.agents.DeckSession
 import io.github.kontsevoye.ichuchu.service.agents.DeckTimelineReducer
 import io.github.kontsevoye.ichuchu.service.agents.DeckTransportException
 import io.github.kontsevoye.ichuchu.service.agents.SshDeckTransport
+import io.github.kontsevoye.ichuchu.service.agents.agentAttachmentMessage
 import io.github.kontsevoye.ichuchu.service.agents.flag
 import io.github.kontsevoye.ichuchu.service.agents.mergeDeckProjects
 import io.github.kontsevoye.ichuchu.service.agents.objects
+import io.github.kontsevoye.ichuchu.service.agents.stageAgentFile
 import io.github.kontsevoye.ichuchu.service.agents.text
 import io.github.kontsevoye.ichuchu.service.ssh.SshConnectionException
 import io.github.kontsevoye.ichuchu.service.terminal.HostKeyPrompt
@@ -88,6 +93,14 @@ data class AgentCreateForm(
     }
 }
 
+data class AgentUploadProgress(
+    val sessionId: String,
+    val batchId: String,
+    val name: String = "Preparing file…",
+    val bytes: Long = 0,
+    val total: Long = 0,
+)
+
 data class AgentUiState(
     val hostName: String = "agents",
     val profile: String = "default",
@@ -116,6 +129,7 @@ data class AgentUiState(
     val creationUnknown: Boolean = false,
     val sending: Boolean = false,
     val loadingOlder: Boolean = false,
+    val upload: AgentUploadProgress? = null,
 ) {
     val selected: DeckSession?
         get() = sessions.firstOrNull { it.id == selectedId }
@@ -124,6 +138,7 @@ data class AgentUiState(
         get() =
             online &&
                 !sending &&
+                upload?.sessionId != selectedId &&
                 capabilities?.guardedSend == true &&
                 selected?.let {
                     it.local &&
@@ -170,6 +185,7 @@ class AgentWorkspace(
     private val statusChanges = AgentStatusChanges()
     private var groups = emptyList<DeckProject>()
     private var projectsJob: Job? = null
+    private var uploadJob: Job? = null
     private var requestedSession: String? = null
     private val pendingDrafts = ConcurrentHashMap<String, String>()
 
@@ -340,6 +356,7 @@ class AgentWorkspace(
     }
 
     private fun stopNetwork() {
+        uploadJob?.cancel()
         generation++
         decision?.cancel()
         decision = null
@@ -672,6 +689,90 @@ class AgentWorkspace(
         }
     }
 
+    fun attachFiles(id: String, uris: List<Uri>) {
+        if (uris.isEmpty()) return
+        val ui = mutable.value
+        val deck = client
+        val cache = store
+        if (ui.selectedId != id || !ui.online || !ui.canSend || deck == null || cache == null) {
+            mutable.update {
+                it.copy(notice = "Reconnect and open the chat before attaching files.")
+            }
+            return
+        }
+        if (uploadJob?.isActive == true) return
+        if (ui.chat.attachments.size + uris.size > AGENT_ATTACHMENT_COUNT) {
+            mutable.update { it.copy(notice = "Attach up to 4 files per message (20 MiB each).") }
+            return
+        }
+        val batch = UUID.randomUUID().toString()
+        mutable.update { it.copy(upload = AgentUploadProgress(id, batch)) }
+        uploadJob =
+            scope.launch {
+                try {
+                    for (uri in uris) {
+                        stageAgentFile(application, uri).use { file ->
+                            mutable.update {
+                                it.copy(
+                                    upload =
+                                        AgentUploadProgress(
+                                            id,
+                                            batch,
+                                            file.name,
+                                            total = file.file.length(),
+                                        )
+                                )
+                            }
+                            val path =
+                                deck.uploadFile(file.name, file.file) { bytes ->
+                                    mutable.update {
+                                        it.copy(
+                                            upload =
+                                                it.upload
+                                                    ?.takeIf { it.batchId == batch }
+                                                    ?.copy(bytes = bytes)
+                                        )
+                                    }
+                                }
+                            val attachment =
+                                AgentAttachment(
+                                    UUID.randomUUID().toString(),
+                                    file.name,
+                                    file.mimeType,
+                                    file.file.length(),
+                                    path,
+                                )
+                            mutateChat(id, cache) {
+                                it.copy(attachments = it.attachments + attachment)
+                            }
+                        }
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    mutable.update { it.copy(notice = "Could not attach file: ${e.message}") }
+                } finally {
+                    mutable.update {
+                        if (it.upload?.batchId == batch) it.copy(upload = null) else it
+                    }
+                }
+            }
+    }
+
+    fun cancelUpload() {
+        uploadJob?.cancel()
+    }
+
+    fun removeAttachment(attachmentId: String) {
+        val id = mutable.value.selectedId ?: return
+        if (mutable.value.sending) return
+        scope.launch {
+            mutateChat(id) {
+                it.copy(attachments = it.attachments.filterNot { file -> file.id == attachmentId })
+            }
+        }
+    }
+
     private suspend fun mutateChat(
         id: String,
         cache: AgentStateStore? = store,
@@ -724,17 +825,25 @@ class AgentWorkspace(
         val ui = mutable.value
         val id = ui.selectedId ?: return
         val deck = client ?: return
-        if (!ui.canSend || ui.chat.draft.isBlank()) return
+        if (!ui.canSend || (ui.chat.draft.isBlank() && ui.chat.attachments.isEmpty())) return
         val cache = store ?: return
         mutable.update { it.copy(sending = true) }
         val text = ui.chat.draft
         val localId = UUID.randomUUID().toString()
-        val unknown = DeckSend(localId, text, buildJsonObject { put("state", "unknown") })
+        val unknown =
+            DeckSend(
+                localId,
+                text,
+                buildJsonObject { put("state", "unknown") },
+                ui.chat.timeline.rows.lastOrNull()?.id,
+                System.currentTimeMillis(),
+                ui.chat.attachments,
+            )
         scope.launch {
             var started = false
             try {
                 val receipt =
-                    deck.send(id, text) {
+                    deck.send(id, agentAttachmentMessage(text, ui.chat.attachments)) {
                         mutateChat(id, cache) { it.copy(sends = it.sends + unknown) }
                         started = true
                     }
@@ -742,6 +851,10 @@ class AgentWorkspace(
                 mutateChat(id, cache) { old ->
                     old.copy(
                         draft = if (old.draft == text) "" else old.draft,
+                        attachments =
+                            old.attachments.filterNot { file ->
+                                ui.chat.attachments.any { it.id == file.id }
+                            },
                         sends =
                             old.sends.map {
                                 if (it.localId == localId) it.copy(receipt = receipt) else it
@@ -873,6 +986,8 @@ class AgentWorkspace(
 
     fun recoverDraft(send: DeckSend) {
         updateDraft(send.text)
+        val id = mutable.value.selectedId ?: return
+        scope.launch { mutateChat(id) { it.copy(attachments = send.attachments) } }
     }
 
     fun showCreate() {

@@ -7,6 +7,7 @@ import androidx.test.platform.app.InstrumentationRegistry
 import io.github.kontsevoye.ichuchu.model.HostOpenMode
 import io.github.kontsevoye.ichuchu.model.HostProfile
 import io.github.kontsevoye.ichuchu.model.SshKey
+import io.github.kontsevoye.ichuchu.service.agents.AgentAttachment
 import io.github.kontsevoye.ichuchu.service.agents.AgentChatState
 import io.github.kontsevoye.ichuchu.service.agents.AgentStateStore
 import io.github.kontsevoye.ichuchu.service.agents.DeckSend
@@ -97,9 +98,7 @@ class EncryptedStorageTest {
                     old.execSQL(sql(entity.getString("createSql")))
                     val indices = entity.getJSONArray("indices")
                     for (j in 0 until indices.length()) {
-                        old.execSQL(
-                        sql(indices.getJSONObject(j).getString("createSql"))
-                    )
+                        old.execSQL(sql(indices.getJSONObject(j).getString("createSql")))
                     }
                 }
                 val setup = schema.getJSONArray("setupQueries")
@@ -158,6 +157,14 @@ class EncryptedStorageTest {
                     )
                 )
                 .build()
+        val attachment =
+            AgentAttachment(
+                "file-id",
+                "SYNTHETIC_PRIVATE_FILE.png",
+                "image/png",
+                42,
+                "/tmp/ichuchu-attachment.fixture/file.png",
+            )
         val value =
             AgentChatState(
                 timeline = DeckTimeline(emptyList(), "opaque-native-record-checkpoint", null),
@@ -168,8 +175,12 @@ class EncryptedStorageTest {
                             "local-intent",
                             "SYNTHETIC_AGENT_PROMPT",
                             Json.parseToJsonElement("{\"state\":\"unknown\"}").jsonObject,
+                            anchorRowId = "native-row",
+                            createdAt = 123456,
+                            attachments = listOf(attachment),
                         )
                     ),
+                attachments = listOf(attachment),
             )
         val database = openRoom()
         val hostId =
@@ -179,11 +190,13 @@ class EncryptedStorageTest {
         try {
             val cache = AgentStateStore(database, hostId, "fixture")
             cache.saveChat("full-id", value)
+            cache.saveChat("attachment-only", AgentChatState(attachments = listOf(attachment)))
             val host = database.hostProfileDao().getById(hostId)!!
             database.hostProfileDao().saveValidated(host.copy(name = "renamed"))
             repeat(25) { cache.saveChat("other-$it", AgentChatState()) }
             cache.clearHistory()
             assertEquals(value, cache.chat("full-id"))
+            assertEquals(listOf(attachment), cache.chat("attachment-only").attachments)
         } finally {
             database.close()
         }
@@ -331,7 +344,9 @@ class EncryptedStorageTest {
     @Test
     fun committedWalRowsAreIncludedBeforePlaintextSidecarsAreRemoved() {
         seedLegacy()
-        android.database.sqlite.SQLiteDatabase.openDatabase(legacy.absolutePath, null, 0).use { source ->
+        val source =
+            android.database.sqlite.SQLiteDatabase.openDatabase(legacy.absolutePath, null, 0)
+        source.use {
             assertTrue(source.enableWriteAheadLogging())
             source.execSQL("INSERT INTO secrets VALUES (2, 'SYNTHETIC_WAL_SECRET')")
             assertTrue(File(legacy.path + "-wal").length() > 0)

@@ -39,6 +39,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -204,6 +205,12 @@ private fun AgentContent(
     var recallDialog by remember { mutableStateOf(false) }
     var retryDialog by remember { mutableStateOf(false) }
     var clearDialog by remember { mutableStateOf(false) }
+    var attachmentTarget by rememberSaveable { mutableStateOf<String?>(null) }
+    val attachmentPicker =
+        rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+            attachmentTarget?.let { vm.attachFiles(it, uris) }
+            attachmentTarget = null
+        }
     state.historyChoices?.let { choices ->
         AgentHistoryPicker(
             choices,
@@ -378,6 +385,12 @@ private fun AgentContent(
                     { recallDialog = true },
                     vm::chooseHistory,
                     vm::retryHistory,
+                    {
+                        attachmentTarget = state.selectedId
+                        attachmentPicker.launch(arrayOf("*/*"))
+                    },
+                    vm::removeAttachment,
+                    vm::cancelUpload,
                 )
             else ->
                 AgentSessions(
@@ -802,33 +815,6 @@ private fun AgentPicker(
     }
 }
 
-private data class ChatBlock(val rows: List<DeckRow>) {
-    val key: String
-        get() = rows.first().id
-}
-
-private fun chatBlocks(rows: List<DeckRow>): List<ChatBlock> {
-    val blocks = mutableListOf<ChatBlock>()
-    val actions = mutableListOf<DeckRow>()
-    fun flush() {
-        if (actions.isNotEmpty()) {
-            blocks += ChatBlock(actions.toList())
-            actions.clear()
-        }
-    }
-    rows.forEach {
-        if (it.isMessage) {
-            flush()
-            blocks += ChatBlock(listOf(it))
-        } else {
-            actions += it
-            if (actions.size == 20) flush()
-        }
-    }
-    flush()
-    return blocks
-}
-
 @Composable
 private fun ColumnScope.AgentChat(
     state: AgentUiState,
@@ -841,6 +827,9 @@ private fun ColumnScope.AgentChat(
     onRecall: () -> Unit,
     onChooseHistory: () -> Unit,
     onRetryHistory: () -> Unit,
+    onAttach: () -> Unit,
+    onRemoveAttachment: (String) -> Unit,
+    onCancelUpload: () -> Unit,
 ) {
     val colors = IchuColors.current
     val type = IchuTypography.current
@@ -851,11 +840,7 @@ private fun ColumnScope.AgentChat(
     val keyboardVisible = WindowInsets.ime.getBottom(density) > 0
     val largeFont = density.fontScale >= 1.5f
     var initialScrollDone by remember(state.selectedId) { mutableStateOf(false) }
-    val blocks = remember(state.chat.timeline.rows) { chatBlocks(state.chat.timeline.rows) }
-    val rowIds =
-        remember(state.chat.timeline.rows) { state.chat.timeline.rows.map { it.id }.toSet() }
-    val sends =
-        state.chat.sends.filterNot { it.landedRowId.isNotBlank() && it.landedRowId in rowIds }
+    val blocks = remember(state.chat.timeline.rows, state.chat.sends) { chatBlocks(state.chat) }
     val atBottom by remember { derivedStateOf { !list.canScrollForward } }
     LaunchedEffect(state.selectedId, blocks.isNotEmpty(), state.chatLoading) {
         if (!initialScrollDone && blocks.isNotEmpty() && !state.chatLoading) {
@@ -863,7 +848,7 @@ private fun ColumnScope.AgentChat(
             initialScrollDone = true
         }
     }
-    LaunchedEffect(blocks.lastOrNull(), sends.lastOrNull()) {
+    LaunchedEffect(blocks.lastOrNull()) {
         if (atBottom && list.layoutInfo.totalItemsCount > 0) {
             list.animateScrollToItem(list.layoutInfo.totalItemsCount - 1)
         }
@@ -966,37 +951,51 @@ private fun ColumnScope.AgentChat(
                 )
             }
         }
-        items(blocks, key = { "row:${it.key}" }) { block ->
-            if (block.rows.size == 1 && block.rows.first().isMessage) {
+        items(blocks, key = { it.key }) { block ->
+            val send = block.send
+            if (send != null) {
+                IchuCard(
+                    Modifier.fillMaxWidth(),
+                    border =
+                        if (send.uncertain || send.state == "failed") {
+                            colors.warning
+                        } else {
+                            colors.border
+                        },
+                ) {
+                    Column(
+                        Modifier.padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        IchuText(
+                            "you · ${send.label}",
+                            style = type.bodySmall,
+                            color = colors.textMuted,
+                        )
+                        SelectionContainer { IchuText(send.text) }
+                        send.attachments.forEach { file ->
+                            IchuText(
+                                "+ ${file.name}",
+                                style = type.bodySmall,
+                                color = colors.textSecondary,
+                            )
+                        }
+                        send.receipt
+                            .text("reason")
+                            .takeIf { it.isNotBlank() }
+                            ?.let { IchuText(it, style = type.bodySmall, color = colors.warning) }
+                        if (send.state == "queued") {
+                            AgentButton("cancel queued message", { onCancel(send) }, state.online)
+                        }
+                        if (send.state in setOf("failed", "cancelled") || send.uncertain) {
+                            AgentButton("copy to draft", { onRecover(send) })
+                        }
+                    }
+                }
+            } else if (block.rows.size == 1 && block.rows.first().isMessage) {
                 AgentMessage(block.rows.first(), session?.tool.orEmpty())
             } else {
                 AgentActions(block.rows)
-            }
-        }
-        items(sends, key = { "send:${it.localId}" }) { send ->
-            IchuCard(
-                Modifier.fillMaxWidth(),
-                border =
-                    if (send.uncertain || send.state == "failed") colors.warning else colors.border,
-            ) {
-                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    IchuText(
-                        "you · ${send.label}",
-                        style = type.bodySmall,
-                        color = colors.textMuted,
-                    )
-                    SelectionContainer { IchuText(send.text) }
-                    send.receipt
-                        .text("reason")
-                        .takeIf { it.isNotBlank() }
-                        ?.let { IchuText(it, style = type.bodySmall, color = colors.warning) }
-                    if (send.state == "queued") {
-                        AgentButton("cancel queued message", { onCancel(send) }, state.online)
-                    }
-                    if (send.state in setOf("failed", "cancelled") || send.uncertain) {
-                        AgentButton("copy to draft", { onRecover(send) })
-                    }
-                }
             }
         }
         state.chat.timeline.status
@@ -1004,7 +1003,7 @@ private fun ColumnScope.AgentChat(
             ?.takeIf { it.isNotBlank() }
             ?.let { verb -> item { IchuText(verb, style = type.bodySmall, color = colors.accent) } }
     }
-    if (!atBottom) {
+    if (!atBottom && !keyboardVisible) {
         AgentButton(
             "↓ latest",
             {
@@ -1022,6 +1021,47 @@ private fun ColumnScope.AgentChat(
         Modifier.fillMaxWidth().padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
+        if (state.chat.attachments.isNotEmpty()) {
+            Column(
+                Modifier.heightIn(max = if (keyboardVisible) 56.dp else 144.dp)
+                    .verticalScroll(rememberScrollState())
+            ) {
+                state.chat.attachments.forEach { file ->
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        IchuText(
+                            "+ ${file.name} · ${io.github.kontsevoye.ichuchu.ui.screens.Files.formatFileSize(file.size)}",
+                            modifier = Modifier.weight(1f),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            style = type.bodySmall,
+                            color = colors.textSecondary,
+                        )
+                        AgentButton(
+                            "×",
+                            { onRemoveAttachment(file.id) },
+                            !state.sending,
+                            description = "Remove attachment ${file.name}",
+                        )
+                    }
+                }
+            }
+        }
+        state.upload
+            ?.takeIf { it.sessionId == state.selectedId }
+            ?.let { upload ->
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    val progress =
+                        if (upload.total > 0) " ${upload.bytes * 100 / upload.total}%" else ""
+                    IchuText(
+                        "${upload.name} · uploading$progress",
+                        modifier = Modifier.weight(1f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        style = type.bodySmall,
+                    )
+                    AgentButton("×", onCancelUpload, description = "Cancel file upload")
+                }
+            }
         IchuTextField(
             state.chat.draft,
             onDraft,
@@ -1034,6 +1074,12 @@ private fun ColumnScope.AgentChat(
             modifier = Modifier.fillMaxWidth(),
         )
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            AgentButton(
+                "+ file",
+                onAttach,
+                state.canSend && state.chat.attachments.size < 4 && state.upload == null,
+                description = "Attach photos or files",
+            )
             IchuText(
                 when {
                     !state.online -> "Draft saved"
@@ -1047,7 +1093,8 @@ private fun ColumnScope.AgentChat(
             AgentButton(
                 if (state.sending) "sending…" else "send ↑",
                 onSend,
-                state.canSend && state.chat.draft.isNotBlank(),
+                state.canSend &&
+                    (state.chat.draft.isNotBlank() || state.chat.attachments.isNotEmpty()),
                 filled = true,
             )
         }

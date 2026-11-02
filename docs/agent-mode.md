@@ -69,6 +69,37 @@ matching title or path and never retries launch automatically.
 
 ## Delivery, reconnection and privacy
 
+### Photos and files
+
+Use **+ file** beside the composer to choose photos, documents or any other file
+through Android's system picker. A message can have up to four attachments,
+20 MiB each. The app shows upload progress and a cancel action; remove a selected
+attachment with **×**. An attachment-only message can be sent without typing text.
+
+Selecting a file uploads a bounded temporary copy over a separate SSH connection,
+so session status monitoring continues. The upload uses the existing authenticated
+route and host-key checks. The app creates a unique owner-only directory and file
+in the host's temporary directory, verifies the byte count and removes incomplete
+transfers. Uploaded file paths and metadata are saved with the encrypted chat
+draft; leaving the screen or reconnecting retains them. The local scratch copy is
+deleted after the upload attempt, and originals remain in the document provider.
+
+Press **send** to give the agent the message and exact host-local file paths. Both
+Claude and an already running Codex can read those files using their usual tools
+and permissions, including an image-viewing tool for screenshots. This does not
+use Deck's `session send --image`, which rejects running Codex sessions. Files
+remain in the remote temporary directory according to that host's cleanup policy;
+removing a chip removes it from the draft. Chat/attachment metadata and local
+scratch files are excluded from portable host/key backups.
+
+### Message order and delivery
+
+Native history keeps Agent Deck's source order. Local delivery records are placed
+at the original send boundary, with server timestamps used for older cached
+receipts, so a delayed receipt stays beside its request instead of appearing
+after later replies. A confirmed native row ID replaces the local record;
+identical text is never used to guess whether a message was delivered.
+
 Prompts travel in SSH stdin using `--message-file - --queue
 --require-input-prompt --no-tag`. They are not interpolated into shell code.
 Sending is disabled when the server lacks the guarded-send capability. Deck can

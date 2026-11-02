@@ -2,6 +2,8 @@ package io.github.kontsevoye.ichuchu.service.agents
 
 import io.github.kontsevoye.ichuchu.service.ssh.NativeSshService
 import java.io.ByteArrayOutputStream
+import java.io.IOException
+import java.io.InputStream
 import java.nio.ByteBuffer
 import java.nio.charset.CodingErrorAction
 import java.util.Collections
@@ -17,7 +19,7 @@ import kotlinx.coroutines.withTimeout
 
 data class DeckExecResult(val stdout: String, val stderr: String, val exitCode: Int)
 
-class DeckTransportException(cause: Exception) : java.io.IOException(cause.message ?: "SSH connection failed", cause)
+class DeckTransportException(e: Exception) : IOException(e.message ?: "SSH connection failed", e)
 
 interface DeckTransport {
     suspend fun execute(
@@ -28,6 +30,13 @@ interface DeckTransport {
     ): DeckExecResult
 
     suspend fun follow(command: String, onFrame: suspend (String) -> Unit)
+
+    suspend fun upload(
+        command: String,
+        input: InputStream,
+        size: Long,
+        onProgress: (Long) -> Unit,
+    ): DeckExecResult = error("File upload is unavailable")
 
     fun interrupt()
 }
@@ -56,7 +65,7 @@ class SshDeckTransport(private val connect: suspend () -> NativeSshService) : De
                     val errors = ByteArrayOutputStream()
                     process(
                             command,
-                            stdin,
+                            stdin?.inputStream(),
                             onStarted,
                             { appendBounded(output, it, 16 * 1024 * 1024) },
                             { appendBounded(errors, it, 64 * 1024) },
@@ -65,6 +74,32 @@ class SshDeckTransport(private val connect: suspend () -> NativeSshService) : De
                             DeckExecResult(output.toString("UTF-8"), errors.toString("UTF-8"), code)
                         }
                 }
+            }
+        }
+
+    override suspend fun upload(
+        command: String,
+        input: InputStream,
+        size: Long,
+        onProgress: (Long) -> Unit,
+    ): DeckExecResult =
+        withTimeout(180_000) {
+            require(size in 0..AGENT_ATTACHMENT_LIMIT) { "Files must be at most 20 MiB" }
+            // A dedicated connection keeps status polling responsive during a large transfer.
+            withContext(Dispatchers.IO) {
+                val output = ByteArrayOutputStream()
+                val errors = ByteArrayOutputStream()
+                val code =
+                    process(
+                        command,
+                        input,
+                        {},
+                        { appendBounded(output, it, 16 * 1024) },
+                        { appendBounded(errors, it, 64 * 1024) },
+                        size,
+                        onProgress,
+                    )
+                DeckExecResult(output.toString("UTF-8"), errors.toString("UTF-8"), code)
             }
         }
 
@@ -89,10 +124,12 @@ class SshDeckTransport(private val connect: suspend () -> NativeSshService) : De
 
     private suspend fun process(
         command: String,
-        stdin: ByteArray?,
+        stdin: InputStream?,
         onStarted: suspend () -> Unit,
         stdout: suspend (ByteArray) -> Unit,
         stderr: suspend (ByteArray) -> Unit,
+        inputLimit: Long = 128 * 1024,
+        onProgress: (Long) -> Unit = {},
     ): Int {
         if (interrupted) throw CancellationException("Connection closed")
         val service = connect()
@@ -104,15 +141,19 @@ class SshDeckTransport(private val connect: suspend () -> NativeSshService) : De
             currentCoroutineContext().ensureActive()
             sshCall { check(service.openExec(command)) { "SSH command could not be started" } }
             if (stdin != null) {
-                require(stdin.size <= 128 * 1024) { "Message exceeds 128 KiB" }
-                var offset = 0
-                while (offset < stdin.size) {
+                var offset = 0L
+                val buffer = ByteArray(8192)
+                while (true) {
                     currentCoroutineContext().ensureActive()
-                    val end = minOf(offset + 8192, stdin.size)
-                    sshCall { service.write(stdin.copyOfRange(offset, end)) }
+                    val count = stdin.read(buffer)
+                    if (count < 0) break
+                    if (count == 0) continue
+                    require(offset + count <= inputLimit) { "Upload exceeds its expected size" }
+                    sshCall { service.write(buffer.copyOf(count)) }
                     stdout(sshCall { service.readStream(0) })
                     stderr(sshCall { service.readStream(1) })
-                    offset = end
+                    offset += count
+                    onProgress(offset)
                 }
             }
             sshCall { service.sendEof() }

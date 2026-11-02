@@ -14,6 +14,7 @@ import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performTextClearance
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.swipeLeft
@@ -55,6 +56,189 @@ class AgentModeTest {
     private fun transport() = SshDeckTransport {
         NativeSshService(hostKeyPolicy = { true }).also {
             it.connect("10.0.2.2", 22229, "deck-fixture", AuthMethod.None, "")
+        }
+    }
+
+    /** Interact with the real Android document picker, without adding a mock picker to the app. */
+    private fun clickPickerItem(label: String, timeout: Long = 10_000): Boolean {
+        val automation = InstrumentationRegistry.getInstrumentation().uiAutomation
+        val end = android.os.SystemClock.uptimeMillis() + timeout
+        while (android.os.SystemClock.uptimeMillis() < end) {
+            val queue = java.util.ArrayDeque<android.view.accessibility.AccessibilityNodeInfo>()
+            automation.rootInActiveWindow?.let(queue::add)
+            while (queue.isNotEmpty()) {
+                val node = queue.removeFirst()
+                if (
+                    node.text?.toString() == label || node.contentDescription?.toString() == label
+                ) {
+                    var target: android.view.accessibility.AccessibilityNodeInfo? = node
+                    while (target != null && !target.isClickable) target = target.parent
+                    if (
+                        target?.performAction(
+                            android.view.accessibility.AccessibilityNodeInfo.ACTION_CLICK
+                        ) == true
+                    ) {
+                        return true
+                    }
+                }
+                for (index in 0 until node.childCount) node.getChild(index)?.let(queue::add)
+            }
+            android.os.SystemClock.sleep(100)
+        }
+        return false
+    }
+
+    @Test
+    fun documentPickerUploadsImagesAndArbitraryFilesBeforeSending() {
+        requireFixture()
+        val app =
+            InstrumentationRegistry.getInstrumentation().targetContext.applicationContext
+                as Application
+        val db = AppDatabase.getInstance(app)
+        val id = runBlocking {
+            db.hostProfileDao()
+                .insert(
+                    HostProfile(
+                        name = "Attachment fixture Mac",
+                        host = "10.0.2.2",
+                        port = 22229,
+                        username = "deck-fixture",
+                        authMethod = AuthMethod.None,
+                        openMode = HostOpenMode.Agents,
+                        deckExecutable = "/fixture/agent-deck",
+                    )
+                )
+        }
+        val vm = AgentViewModel(app, id)
+        fun choose(name: String) {
+            compose.onNodeWithContentDescription("Attach photos or files").performClick()
+            if (!clickPickerItem(name, 1000)) {
+                assertTrue("Open picker roots", clickPickerItem("Show roots"))
+                assertTrue("Open Downloads", clickPickerItem("Downloads"))
+                assertTrue("Select $name", clickPickerItem(name))
+            }
+        }
+        try {
+            GhosttyThemeRegistry.init(app)
+            val arguments = InstrumentationRegistry.getArguments()
+            compose.setContent {
+                val density = LocalDensity.current
+                CompositionLocalProvider(
+                    LocalDensity provides
+                        Density(
+                            density.density,
+                            arguments.getString("agentFontScale", "1.0").toFloat(),
+                        )
+                ) {
+                    IchuTheme(themeName = arguments.getString("agentTheme")) {
+                        AgentScreen(vm, {}, {}, {})
+                    }
+                }
+            }
+            compose.waitUntil(30_000) { vm.hostKeyPrompt.value != null || vm.state.value.online }
+            compose.runOnIdle { vm.respondToHostKey(true) }
+            compose.waitUntil(30_000) { vm.state.value.online }
+            compose.onNodeWithText("Fix draft recovery").performClick()
+            compose.waitUntil(20_000) { !vm.state.value.chatLoading }
+            choose("Attachment screenshot.png")
+            compose.waitUntil(30_000) {
+                vm.state.value.chat.attachments.size == 1 && vm.state.value.upload == null
+            }
+            val image = vm.state.value.chat.attachments.single()
+            assertEquals("image/png", image.mimeType)
+            choose("Attachment data.bin")
+            compose.waitUntil(30_000) {
+                vm.state.value.chat.attachments.size == 2 && vm.state.value.upload == null
+            }
+            val binary = vm.state.value.chat.attachments.last()
+            assertEquals(256L * 1024, binary.size)
+            runBlocking {
+                val wire = transport()
+                try {
+                    val info =
+                        io.github.kontsevoye.ichuchu.service.agents.parseDeckObject(
+                            wire
+                                .execute(
+                                    "fixture-upload-info " +
+                                        io.github.kontsevoye.ichuchu.service.agents.DeckCommands
+                                            .quote(binary.remotePath)
+                                )
+                                .stdout
+                        )
+                    val expected =
+                        java.security.MessageDigest.getInstance("SHA-256")
+                            .digest(ByteArray(256 * 1024) { (it % 251).toByte() })
+                            .joinToString("") { "%02x".format(it) }
+                    assertEquals(
+                        expected,
+                        (info["sha256"] as kotlinx.serialization.json.JsonPrimitive).content,
+                    )
+                } finally {
+                    wire.interrupt()
+                }
+            }
+            assertFalse(
+                vm.state.value.chat.timeline.rows.any { it.body.contains(image.remotePath) }
+            )
+            choose("Attachment too large.bin")
+            compose.waitUntil(20_000) {
+                vm.state.value.upload == null && vm.state.value.notice?.contains("20 MiB") == true
+            }
+            assertEquals(2, vm.state.value.chat.attachments.size)
+            compose.runOnIdle { vm.clearMessage() }
+            compose
+                .onNodeWithContentDescription("Remove attachment Attachment data.bin")
+                .performClick()
+            compose.waitUntil { vm.state.value.chat.attachments.size == 1 }
+            choose("Attachment data.bin")
+            compose.waitUntil(30_000) {
+                vm.state.value.chat.attachments.size == 2 && vm.state.value.upload == null
+            }
+            val expectedFiles = vm.state.value.chat.attachments
+            compose.runOnIdle { vm.disconnect() }
+            compose.waitUntil { !vm.state.value.online }
+            compose.onNodeWithText("send ↑").assertIsNotEnabled()
+            compose.runOnIdle { vm.reconnect() }
+            compose.waitUntil(30_000) { vm.state.value.online }
+            val session = requireNotNull(vm.state.value.selectedId)
+            compose.runOnIdle {
+                vm.back()
+                vm.openSession(session)
+            }
+            compose.waitUntil(20_000) {
+                !vm.state.value.chatLoading && vm.state.value.chat.attachments.size == 2
+            }
+            assertEquals(expectedFiles, vm.state.value.chat.attachments)
+            capture("agent-attachments-ready")
+            compose
+                .onAllNodes(hasSetTextAction())
+                .onLast()
+                .performTextInput("Screenshot and binary attachment")
+            compose.onNodeWithText("send ↑").assertIsDisplayed()
+            capture("agent-attachments-composing")
+            val sendBounds = compose.onNodeWithText("send ↑").fetchSemanticsNode().boundsInRoot
+            assertTrue(
+                "Send must retain its full touch target above the keyboard: $sendBounds",
+                sendBounds.height >= 48 * app.resources.displayMetrics.density - 1,
+            )
+            compose.onAllNodes(hasSetTextAction()).onLast().performTextClearance()
+            compose.onNodeWithText("send ↑").assertIsDisplayed().performClick()
+            compose.waitUntil(20_000) {
+                vm.state.value.chat.attachments.isEmpty() &&
+                    vm.state.value.chat.timeline.rows.any { row ->
+                        expectedFiles.all { row.body.contains(it.remotePath) }
+                    }
+            }
+            assertTrue(java.io.File(app.cacheDir, "agent-uploads").listFiles().orEmpty().isEmpty())
+            capture("agent-attachments-sent")
+        } finally {
+            compose.runOnIdle {
+                vm.disconnect()
+                vm.setForeground(false)
+            }
+            runBlocking {
+                db.hostProfileDao().getById(id)?.let { db.hostProfileDao().deleteUnused(it) }
+            }
         }
     }
 

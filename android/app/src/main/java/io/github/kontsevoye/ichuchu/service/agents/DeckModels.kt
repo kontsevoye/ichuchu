@@ -295,7 +295,14 @@ class DeckTimelineReducer {
     fun value(): DeckTimeline = DeckTimeline(rows.values.map(::DeckRow), cursor, before, status)
 }
 
-data class DeckSend(val localId: String, val text: String, val receipt: JsonObject) {
+data class DeckSend(
+    val localId: String,
+    val text: String,
+    val receipt: JsonObject,
+    val anchorRowId: String? = null,
+    val createdAt: Long = 0,
+    val attachments: List<AgentAttachment> = emptyList(),
+) {
     val sendId: String
         get() = receipt.text("send_id").ifBlank { receipt.text("id") }
 
