@@ -91,6 +91,9 @@ class DeckClient(
                 },
                 fields,
                 events,
+                listOf("codex-composer-fallback", "defer-if-busy", "defer-timeout", "timeout").all {
+                    help.contains("-$it")
+                },
             )
         return capabilities
     }
@@ -196,6 +199,81 @@ class DeckClient(
             capabilities.copy(
                 recallEnabled = obj("config", "get", "recall.enabled", "--json").flag("value")
             )
+    }
+
+    suspend fun send(
+        session: DeckSession,
+        message: String,
+        onStarted: suspend () -> Unit,
+    ): JsonObject {
+        if (
+            session.tool != "codex" ||
+                session.raw.text("codex_session_id").isNotBlank() ||
+                !capabilities.codexComposerSend
+        ) {
+            return send(session.id, message, onStarted)
+        }
+        check(capabilities.guardedSend) {
+            "This Agent Deck version cannot safely send chat messages"
+        }
+        require(message.isNotBlank() && message.toByteArray().size <= 128 * 1024) {
+            "Message must contain text and fit within 128 KiB"
+        }
+        // Deck's queue worker drops --codex-composer-fallback. A fresh/remote Codex has no
+        // rollout identity yet, so use its public guarded composer path for this one send.
+        // --defer-if-busy disables implicit JSON queueing and waits without interrupting a turn.
+        val result =
+            transport.execute(
+                command(
+                    listOf(
+                        "session",
+                        "send",
+                        session.id,
+                        "--message-file",
+                        "-",
+                        "--json",
+                        "--codex-composer-fallback",
+                        "--defer-if-busy",
+                        "--defer-timeout",
+                        "15s",
+                        "--timeout",
+                        "10s",
+                        "--require-input-prompt",
+                        "--no-tag",
+                    )
+                ),
+                message.toByteArray(Charsets.UTF_8),
+                timeoutMs = 45_000,
+                onStarted = onStarted,
+            )
+        val receipt =
+            optionalParse(result.stdout) ?: error("Agent Deck returned no delivery result")
+        val state =
+            when {
+                receipt.flag("submitted") && receipt.text("confirmation") == "confirmed" ->
+                    "submitted"
+                receipt.text("delivery") in
+                    setOf(
+                        "acceptance_refused",
+                        "menu_open",
+                        "pane_gone",
+                        "composer_blocked",
+                        "target_busy",
+                        "line_too_long",
+                    ) -> "failed"
+                receipt.text("delivery") in setOf("typed", "typed_not_submitted") -> "typed"
+                else -> "unknown"
+            }
+        // A synchronous result has no durable send ID. Never fabricate landing evidence or
+        // replay after a lost SSH reply. Keep the local intent until the user reviews it.
+        return JsonObject(
+            receipt +
+                mapOf(
+                    "state" to JsonPrimitive(state),
+                    "settled" to JsonPrimitive(true),
+                    "reason" to JsonPrimitive(receipt.text("error")),
+                )
+        )
     }
 
     suspend fun send(id: String, message: String, onStarted: suspend () -> Unit): JsonObject {

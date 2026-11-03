@@ -257,6 +257,90 @@ class DeckProtocolTest {
     }
 
     @Test
+    fun establishedCodexAndClaudeKeepDurableQueueDelivery() = runBlocking {
+        val wire = FakeDeckTransport()
+        val client = DeckClient(wire, "default", "agent-deck")
+        client.probe()
+        wire.reply = DeckExecResult("""{"send_id":"queued","state":"queued"}""", "", 0)
+        for (session in
+            listOf(
+                DeckSession(
+                    json("""{"id":"codex","tool":"codex","codex_session_id":"native-thread"}""")
+                ),
+                DeckSession(json("""{"id":"claude","tool":"claude"}""")),
+            )) {
+            assertEquals("queued", client.send(session, "keep queue") {}.text("state"))
+            assertTrue(wire.command.contains("'--queue'"))
+            assertFalse(wire.command.contains("'--codex-composer-fallback'"))
+        }
+    }
+
+    @Test
+    fun freshCodexUsesGuardedComposerInsteadOfAnUndeliverableQueue() = runBlocking {
+        val wire = FakeDeckTransport()
+        val client = DeckClient(wire, "default", "agent-deck")
+        client.probe()
+        wire.reply =
+            DeckExecResult(
+                """{"success":true,"session_id":"fresh","delivery":"submitted","submitted":true,"confirmation":"confirmed"}""",
+                "",
+                0,
+            )
+        val receipt =
+            client.send(
+                DeckSession(json("""{"id":"fresh","tool":"codex","status":"waiting"}""")),
+                "first request",
+            ) {}
+        assertTrue(wire.command.contains("'--codex-composer-fallback'"))
+        assertTrue(wire.command.contains("'--defer-if-busy'"))
+        assertTrue(wire.command.contains("'--require-input-prompt'"))
+        assertFalse(wire.command.contains("'--queue'"))
+        assertFalse(wire.command.contains("'--no-wait'"))
+        assertEquals(1, wire.mutations)
+        val send = DeckSend("local", "first request", receipt)
+        assertEquals("submitted", send.state)
+        assertTrue(send.final)
+        assertFalse(send.uncertain)
+    }
+
+    @Test
+    fun freshCodexRefusalsAndAmbiguousWritesNeverClaimDeliveryOrReplay() = runBlocking {
+        val wire = FakeDeckTransport()
+        val client = DeckClient(wire, "default", "agent-deck")
+        client.probe()
+        val session = DeckSession(json("""{"id":"fresh","tool":"codex","status":"waiting"}"""))
+        for (delivery in
+            listOf("acceptance_refused", "menu_open", "composer_blocked", "target_busy")) {
+            wire.reply =
+                DeckExecResult(
+                    """{"success":false,"delivery":"$delivery","error":"not typed"}""",
+                    "",
+                    1,
+                )
+            assertEquals(
+                "failed",
+                DeckSend("local", "prompt", client.send(session, "prompt") {}).state,
+            )
+        }
+        for (delivery in listOf("typed", "typed_not_submitted", "unverified", "future_delivery")) {
+            wire.reply =
+                DeckExecResult(
+                    """{"success":true,"delivery":"$delivery","submitted":false,"confirmation":"unknown"}""",
+                    "",
+                    0,
+                )
+            assertTrue(DeckSend("local", "prompt", client.send(session, "prompt") {}).uncertain)
+        }
+        val before = wire.mutations
+        wire.failure = IllegalStateException("connection lost after typing")
+        try {
+            client.send(session, "prompt") {}
+            fail("Lost response must be unknown")
+        } catch (_: IllegalStateException) {}
+        assertEquals(before + 1, wire.mutations)
+    }
+
+    @Test
     fun oldGuardlessVersionStaysReadOnlyAndUnknownTranscriptSchemaFails() = runBlocking {
         val wire = FakeDeckTransport(guard = false)
         val client = DeckClient(wire, "default", "agent-deck")
@@ -311,7 +395,7 @@ internal class FakeDeckTransport(private val guard: Boolean = true) : DeckTransp
                     """{"version":1,"commands":{"launch":[{"name":"no-parent"},{"name":"title"},{"name":"model"},{"name":"group"}]},"tools":[{"name":"claude","models":["fixture-model"]},{"name":"codex","models":null}],"accounts":[]}"""
                 command.contains("'--help'") ->
                     if (guard) {
-                        "-require-input-prompt -queue -message-file -no-tag -json"
+                        "-require-input-prompt -queue -message-file -no-tag -json -codex-composer-fallback -defer-if-busy -defer-timeout -timeout"
                     } else {
                         "-message-file -json"
                     }

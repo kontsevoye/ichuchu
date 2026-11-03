@@ -175,6 +175,7 @@ data class DeckCapabilities(
     val accounts: List<String>,
     val launchFields: Set<String>,
     val events: Boolean,
+    val codexComposerSend: Boolean = false,
 )
 
 data class DeckRow(val raw: JsonObject) {
@@ -314,16 +315,25 @@ data class DeckSend(
 
     val uncertain: Boolean
         get() =
-            state == "unknown" || (state in setOf("typed", "submitted") && receipt.flag("settled"))
+            state == "unknown" ||
+                (state in setOf("typed", "submitted") &&
+                    receipt.flag("settled") &&
+                    !(state == "submitted" &&
+                        receipt.flag("submitted") &&
+                        receipt.text("confirmation") == "confirmed"))
 
     val final: Boolean
-        get() = state in setOf("failed", "cancelled", "landed") || uncertain
+        get() =
+            state in setOf("failed", "cancelled", "landed") ||
+                uncertain ||
+                (state == "submitted" && receipt.flag("settled"))
 
     val label: String
         get() =
             when {
                 uncertain -> "delivery unconfirmed"
                 state == "landed" -> "received by agent"
+                state == "submitted" && final -> "submitted to agent"
                 state == "failed" -> "not delivered"
                 state == "cancelled" -> "cancelled"
                 state == "queued" -> "queued"
@@ -333,3 +343,37 @@ data class DeckSend(
 
 internal fun parseDeckObject(value: String): JsonObject =
     deckJson.parseToJsonElement(value).jsonObject
+
+/** Repair repeated queue imports by identity, preserving drafts' attachment and ordering data. */
+fun uniqueDeckSends(sends: List<DeckSend>): List<DeckSend> {
+    val result = mutableListOf<DeckSend>()
+    val localIds = mutableMapOf<String, Int>()
+    val sendIds = mutableMapOf<String, Int>()
+    for (send in sends) {
+        val index =
+            localIds[send.localId] ?: send.sendId.takeIf { it.isNotBlank() }?.let(sendIds::get)
+        if (index == null) {
+            localIds[send.localId] = result.size
+            if (send.sendId.isNotBlank()) sendIds[send.sendId] = result.size
+            result += send
+        } else {
+            val old = result[index]
+            result[index] =
+                old.copy(
+                    text = old.text.ifBlank { send.text },
+                    receipt =
+                        if (old.final && !old.uncertain && !send.final) {
+                            old.receipt
+                        } else {
+                            send.receipt
+                        },
+                    anchorRowId = old.anchorRowId ?: send.anchorRowId,
+                    createdAt = old.createdAt.takeIf { it > 0 } ?: send.createdAt,
+                    attachments = (old.attachments + send.attachments).distinctBy { it.id },
+                )
+            localIds[send.localId] = index
+            if (send.sendId.isNotBlank()) sendIds[send.sendId] = index
+        }
+    }
+    return result
+}

@@ -20,6 +20,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 LOCK = threading.Lock()
 SESSIONS = [{"id": "fixture-existing-full-id", "title": "Fix draft recovery", "path": "/fixture/chuchu",
              "tool": "codex", "profile": "default", "group": "work", "status": "waiting",
+             "codex_session_id": "fixture-linked-native",
              "substate": "idle-at-empty-prompt", "status_source": "live"}]
 ROWS = [
     {"id": "user-1", "kind": "user", "body": "Keep my draft when the Mac disconnects."},
@@ -32,6 +33,7 @@ HISTORY = {"fixture-existing-full-id": ROWS}
 HISTORY["fixture-native-thread"] = [{"id": "native-exact", "kind": "assistant", "body": "Exact linked Codex history"}]
 GROUPS = {"work": "/fixture/chuchu", "Empty project": "/fixture/empty-project", "parent": "", "parent/child": "/fixture/child"}
 SENDS = {}
+QUEUE_PAUSES = {}
 RECALL = True
 DROP_NEXT_LIST = False
 EVENTS = []
@@ -66,6 +68,26 @@ def process(channel, command):
     global RECALL, DROP_NEXT_LIST
     channel.settimeout(15)
     upload = shlex.split(command)
+    if upload[:1] == ["fixture-queue-seed"]:
+        ident = "pending-" + upload[1]
+        with LOCK:
+            SENDS[ident] = {"send_id": ident, "session_id": upload[1],
+                            "message": "Retain this undelivered request", "state": "failed",
+                            "reason": "Codex session identity is unavailable; nothing was typed"}
+        channel.sendall(encoded({"id": ident}))
+        return 0
+    if upload[:1] == ["fixture-queue-pause"]:
+        QUEUE_PAUSES[upload[1]] = (threading.Event(), threading.Event())
+        channel.sendall(b"armed\n")
+        return 0
+    if upload[:1] == ["fixture-queue-wait"]:
+        pause = QUEUE_PAUSES[upload[1]]
+        channel.sendall(b"entered\n" if pause[0].wait(12) else b"timeout\n")
+        return 0
+    if upload[:1] == ["fixture-queue-release"]:
+        QUEUE_PAUSES[upload[1]][1].set()
+        channel.sendall(b"released\n")
+        return 0
     if upload[:3] == ["exec", "sh", "-c"] and upload[3].startswith("# ichuchu-upload-v1\n"):
         size = int(upload[-1])
         if not 0 <= size <= 20 * 1024 * 1024:
@@ -158,7 +180,7 @@ def process(channel, command):
     elif args[:2] == ["harness", "list"]:
         output = [{"name": name, "installed": True, "state": "ready"} for name in ["claude", "codex"]]
     elif args[:3] == ["session", "send", "--help"]:
-        channel.sendall(b"-require-input-prompt -queue -message-file -no-tag -json\n")
+        channel.sendall(b"-require-input-prompt -queue -message-file -no-tag -json -codex-composer-fallback -defer-if-busy -defer-timeout -timeout\n")
         return 0
     elif args[:2] == ["config", "get"]:
         output = {"key": "recall.enabled", "value": RECALL}
@@ -193,6 +215,7 @@ def process(channel, command):
             return 2
         with LOCK:
             HISTORY[args[2]] = HISTORY[args[4]]
+            next(session for session in SESSIONS if session["id"] == args[2])["codex_session_id"] = args[4]
         output = {"success": True}
     elif args[:2] == ["recall", "timeline"]:
         with LOCK:
@@ -213,7 +236,7 @@ def process(channel, command):
                 channel.sendall(encoded({"frame": "row", "row": row, "cursor": str(cursor)}))
             time.sleep(0.05)
     elif args[:2] == ["session", "send"]:
-        required = ["--message-file", "-", "--queue", "--require-input-prompt", "--no-tag"]
+        required = ["--message-file", "-", "--require-input-prompt", "--no-tag"]
         if not all(item in args for item in required):
             return 2
         body = b""
@@ -225,14 +248,34 @@ def process(channel, command):
             row_id = "landed-" + ident
             output = {"send_id": ident, "session_id": args[2], "message": message,
                       "state": "landed", "landed_row_id": row_id}
-            SENDS[ident] = output
+            session = next(s for s in SESSIONS if s["id"] == args[2])
+            if session["tool"] == "codex" and not session.get("codex_session_id"):
+                # The real Deck queue worker does not forward --codex-composer-fallback.
+                if "--queue" in args or "--defer-if-busy" not in args or "--codex-composer-fallback" not in args:
+                    output.update(state="failed", landed_row_id="", reason="Codex session identity is unavailable; nothing was typed")
+                    SENDS[ident] = output
+                    channel.sendall(encoded(dict(output, state="queued")))
+                    return 0
+                output = {"session_id": args[2], "success": True, "delivery": "submitted", "submitted": True, "confirmation": "confirmed"}
+            SENDS[ident] = {"send_id": ident, "session_id": args[2], "message": message,
+                            "state": "landed", "landed_row_id": row_id}
             HISTORY.setdefault(args[2], []).append({"id": row_id, "kind": "user", "body": message})
             HISTORY.setdefault(args[2], []).append({"id": "reply-" + ident, "kind": "assistant", "body": "Synthetic reply: message received."})
     elif args[:2] == ["session", "send-status"]:
         output = SENDS.get(args[2], {"success": False, "code": "NOT_FOUND", "error": "receipt not found"})
         code = 0 if args[2] in SENDS else 1
     elif args[:3] == ["session", "queue", "list"]:
-        output = {"session_id": args[3], "queue": []}
+        pause = QUEUE_PAUSES.get(args[3])
+        if pause:
+            pause[0].set()
+            pause[1].wait(15)
+            QUEUE_PAUSES.pop(args[3], None)
+        with LOCK:
+            output = {"session_id": args[3], "queue": [
+                {"id": ident, "text_preview": receipt["message"], "state": receipt["state"]}
+                for ident, receipt in SENDS.items()
+                if receipt["session_id"] == args[3] and receipt["state"] != "landed"
+            ]}
     elif args[:3] == ["session", "queue", "cancel"]:
         output = {"id": args[3], "outcome": "not_found"}
     elif args[:1] == ["launch"]:
@@ -242,6 +285,7 @@ def process(channel, command):
             row = dict(SESSIONS[0], id=f"fixture-created-{len(SESSIONS)}", title=args[args.index("--title") + 1] if "--title" in args else "New fixture session", tool=args[args.index("-c") + 1])
             row["status"] = "waiting"
             row["substate"] = "idle-at-empty-prompt"
+            row.pop("codex_session_id", None)
             row["path"] = args[1]
             row["group"] = args[args.index("--group") + 1] if "--group" in args else ""
             SESSIONS.append(row)

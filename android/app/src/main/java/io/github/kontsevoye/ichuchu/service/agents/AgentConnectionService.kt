@@ -24,9 +24,11 @@ import kotlinx.coroutines.launch
 class AgentConnectionService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val connections by lazy { AgentConnections.get(this) }
+    private var generation = 0L
 
     override fun onCreate() {
         super.onCreate()
+        generation = connections.serviceGeneration
         if (Build.VERSION.SDK_INT >= 26) {
             getSystemService(NotificationManager::class.java)
                 .createNotificationChannel(
@@ -67,7 +69,7 @@ class AgentConnectionService : Service() {
 
     override fun onDestroy() {
         scope.cancel()
-        connections.disconnectAll()
+        if (generation == connections.serviceGeneration) connections.disconnectAll()
         stopForeground(STOP_FOREGROUND_REMOVE)
         super.onDestroy()
     }

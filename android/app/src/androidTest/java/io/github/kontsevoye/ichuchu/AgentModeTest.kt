@@ -590,8 +590,15 @@ class AgentModeTest {
         }
     }
 
+    @Test fun newSessionHasStableEmptyChatAndAcceptsFirstMessage() = firstMessage("claude")
+
+    @Test fun newCodexSessionAcceptsFirstMessageWithHostDefaults() = firstMessage("codex")
+
     @Test
-    fun newSessionHasStableEmptyChatAndAcceptsFirstMessage() = runBlocking {
+    fun newCodexSessionAcceptsFirstMessageWithExplicitModelAndEffort() =
+        firstMessage("codex", "fixture-model", "high")
+
+    private fun firstMessage(tool: String, model: String = "", effort: String = "") = runBlocking {
         requireFixture()
         val app =
             InstrumentationRegistry.getInstrumentation().targetContext.applicationContext
@@ -618,14 +625,23 @@ class AgentModeTest {
             compose.waitUntil(30_000) { vm.state.value.online }
             compose.runOnIdle {
                 vm.showCreate()
-                vm.updateCreate(vm.state.value.create.copy(title = "Empty transcript regression"))
+                vm.updateCreate(
+                    vm.state.value.create.copy(
+                        title = "Empty transcript regression",
+                        tool = tool,
+                        model = model,
+                        effort = effort,
+                    )
+                )
                 vm.create()
             }
             compose.waitUntil(30_000) {
                 vm.state.value.selectedId?.startsWith("fixture-created-") == true &&
                     !vm.state.value.creating
             }
-            delay(4000)
+            compose.waitUntil(20_000) {
+                vm.state.value.historyMissing && !vm.state.value.chatLoading
+            }
             assertTrue("New session must allow its first message", vm.state.value.canSend)
             assertEquals(
                 "A missing first transcript is an empty chat, not a loading error",
@@ -641,16 +657,104 @@ class AgentModeTest {
                 vm.send()
             }
             compose.waitUntil(20_000) {
+                val arrived =
+                    vm.state.value.chat.timeline.rows.any {
+                        it.body == "First message creates the native transcript"
+                    }
+                arrived || vm.state.value.chat.sends.any { it.state == "failed" }
+            }
+            assertTrue(
+                "The first request must reach Codex, not fail in its queue: ${vm.state.value.chat.sends.map { it.receipt }}",
                 vm.state.value.chat.timeline.rows.any {
                     it.body == "First message creates the native transcript"
-                }
-            }
+                },
+            )
         } finally {
             compose.runOnIdle {
                 vm.disconnect()
                 vm.setForeground(false)
             }
             db.hostProfileDao().getById(id)?.let { db.hostProfileDao().deleteUnused(it) }
+        }
+    }
+
+    @Test
+    fun queuedReceiptsSurviveNavigationAndReconnect() = runBlocking {
+        requireFixture()
+        val app =
+            InstrumentationRegistry.getInstrumentation().targetContext.applicationContext
+                as Application
+        val db = AppDatabase.getInstance(app)
+        val hostId =
+            db.hostProfileDao()
+                .insert(
+                    HostProfile(
+                        name = "Queue recovery fixture",
+                        host = "10.0.2.2",
+                        port = 22229,
+                        username = "deck-fixture",
+                        authMethod = AuthMethod.None,
+                        openMode = HostOpenMode.Agents,
+                        deckExecutable = "/fixture/agent-deck",
+                    )
+                )
+        val vm = AgentViewModel(app, hostId)
+        val control = transport()
+        try {
+            GhosttyThemeRegistry.init(app)
+            compose.setContent { IchuTheme { AgentScreen(vm, {}, {}, {}) } }
+            compose.waitUntil(30_000) { vm.hostKeyPrompt.value != null || vm.state.value.online }
+            compose.runOnIdle { vm.respondToHostKey(true) }
+            compose.waitUntil(30_000) {
+                vm.state.value.online && vm.state.value.projects.isNotEmpty()
+            }
+            compose.runOnIdle {
+                vm.showCreate()
+                vm.updateCreate(
+                    vm.state.value.create.copy(tool = "codex", title = "Queue recovery")
+                )
+                vm.create()
+            }
+            compose.waitUntil(30_000) {
+                vm.state.value.selectedId?.startsWith("fixture-created-") == true &&
+                    !vm.state.value.creating
+            }
+            val id = requireNotNull(vm.state.value.selectedId)
+            control.execute("fixture-queue-seed $id")
+            compose.runOnIdle { vm.refresh() }
+            compose.waitUntil(15_000) { vm.state.value.chat.sends.size == 1 }
+            control.execute("fixture-queue-pause $id")
+            compose.runOnIdle { vm.refresh() }
+            assertEquals("entered", control.execute("fixture-queue-wait $id").stdout.trim())
+            // Leave while the remote queue read is in flight, then reopen its persisted chat.
+            compose.runOnIdle { vm.back() }
+            control.execute("fixture-queue-release $id")
+            delay(1500)
+            compose.runOnIdle { vm.openSession(id) }
+            compose.waitUntil(15_000) {
+                !vm.state.value.chatLoading && vm.state.value.chat.sends.isNotEmpty()
+            }
+            compose.waitForIdle()
+            assertEquals(
+                "One receipt per remote send after reopening",
+                1,
+                vm.state.value.chat.sends.size,
+            )
+            compose.onNodeWithText("Retain this undelivered request").assertIsDisplayed()
+            compose.runOnIdle {
+                vm.disconnect()
+                vm.reconnect()
+            }
+            compose.waitUntil(30_000) { vm.state.value.online }
+            delay(6000)
+            assertEquals(1, vm.state.value.chat.sends.size)
+        } finally {
+            control.interrupt()
+            compose.runOnIdle {
+                vm.disconnect()
+                vm.setForeground(false)
+            }
+            db.hostProfileDao().getById(hostId)?.let { db.hostProfileDao().deleteUnused(it) }
         }
     }
 

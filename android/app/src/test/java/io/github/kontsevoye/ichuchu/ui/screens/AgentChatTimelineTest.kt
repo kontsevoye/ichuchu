@@ -11,6 +11,23 @@ import org.junit.Test
 
 class AgentChatTimelineTest {
     @Test
+    fun reopeningOldCacheDoesNotReuseLazyColumnKeysOrCollapseSeparateRequests() {
+        val failed =
+            DeckSend(
+                "remote:one",
+                "same text",
+                parseDeckObject("""{"send_id":"one","state":"failed"}"""),
+            )
+        val distinctRequest =
+            failed.copy(
+                localId = "remote:two",
+                receipt = parseDeckObject("""{"send_id":"two","state":"failed"}"""),
+            )
+        val blocks = chatBlocks(AgentChatState(sends = listOf(failed, failed, distinctRequest)))
+        assertEquals(listOf("send:remote:one", "send:remote:two"), blocks.map { it.key })
+    }
+
+    @Test
     fun anchoredSendsDoNotMoveBehindNewRowsOrUseThePhoneClock() {
         val first =
             DeckRow(

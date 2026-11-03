@@ -23,6 +23,8 @@ class AgentConnections private constructor(private val application: Application)
     val active = mutableActive.asStateFlow()
     private val mutableTarget = MutableStateFlow<AgentChatTarget?>(null)
     val target = mutableTarget.asStateFlow()
+    var serviceGeneration = 0L
+        private set
 
     fun workspace(hostId: Long): AgentWorkspace =
         workspaces.getOrPut(hostId) { AgentWorkspace(application, hostId, this) }
@@ -38,6 +40,7 @@ class AgentConnections private constructor(private val application: Application)
         val first = mutableActive.value.isEmpty()
         mutableActive.value = mutableActive.value + (hostId to name)
         if (first) {
+            serviceGeneration++
             try {
                 AgentConnectionService.start(application)
             } catch (e: Exception) {
@@ -50,6 +53,9 @@ class AgentConnections private constructor(private val application: Application)
     fun deactivate(hostId: Long) {
         mutableActive.value = mutableActive.value - hostId
         if (mutableActive.value.isEmpty()) {
+            // Android delivers onDestroy asynchronously; an old service must not tear down
+            // a connection started after this explicit stop request.
+            serviceGeneration++
             application.stopService(Intent(application, AgentConnectionService::class.java))
         }
         releaseUnused(hostId)

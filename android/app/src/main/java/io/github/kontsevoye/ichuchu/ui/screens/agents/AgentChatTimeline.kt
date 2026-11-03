@@ -4,6 +4,7 @@ import io.github.kontsevoye.ichuchu.service.agents.AgentChatState
 import io.github.kontsevoye.ichuchu.service.agents.DeckRow
 import io.github.kontsevoye.ichuchu.service.agents.DeckSend
 import io.github.kontsevoye.ichuchu.service.agents.text
+import io.github.kontsevoye.ichuchu.service.agents.uniqueDeckSends
 import java.text.ParsePosition
 import java.text.SimpleDateFormat
 import java.util.Locale
@@ -17,7 +18,10 @@ data class ChatBlock(val rows: List<DeckRow> = emptyList(), val send: DeckSend? 
 fun chatBlocks(chat: AgentChatState): List<ChatBlock> {
     val rows = chat.timeline.rows
     val indices = rows.mapIndexed { index, row -> row.id to index }.toMap()
-    val pending = chat.sends.filterNot { it.landedRowId.isNotBlank() && it.landedRowId in indices }
+    val pending =
+        uniqueDeckSends(chat.sends).filterNot {
+            it.landedRowId.isNotBlank() && it.landedRowId in indices
+        }
     val rowTimes by lazy { rows.map { parseTime(it.timestamp) } }
     val positions =
         pending.groupBy { send ->

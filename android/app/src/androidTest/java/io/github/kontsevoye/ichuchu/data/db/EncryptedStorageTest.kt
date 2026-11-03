@@ -17,6 +17,8 @@ import java.security.KeyStore
 import java.util.UUID
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 import net.zetetic.database.sqlcipher.SQLiteDatabase
 import org.json.JSONObject
@@ -190,6 +192,15 @@ class EncryptedStorageTest {
         try {
             val cache = AgentStateStore(database, hostId, "fixture")
             cache.saveChat("full-id", value)
+            // Replay the old navigation race's persisted duplicates, bypassing the repaired
+            // writer. Reopening must preserve the draft, attachments and original send anchor.
+            val stored = requireNotNull(cache.get("chat:full-id"))
+            val sends = stored["sends"] as JsonArray
+            cache.put(
+                "chat:full-id",
+                JsonObject(stored + ("sends" to JsonArray(sends + sends))),
+                protected = true,
+            )
             cache.saveChat("attachment-only", AgentChatState(attachments = listOf(attachment)))
             val host = database.hostProfileDao().getById(hostId)!!
             database.hostProfileDao().saveValidated(host.copy(name = "renamed"))

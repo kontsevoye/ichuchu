@@ -112,7 +112,10 @@ Native history keeps Agent Deck's source order. Local delivery records are place
 at the original send boundary, with server timestamps used for older cached
 receipts, so a delayed receipt stays beside its request instead of appearing
 after later replies. A confirmed native row ID replaces the local record;
-identical text is never used to guess whether a message was delivered.
+identical text is never used to guess whether a message was delivered. Queue
+imports are reconciled against the owning session even when you switch chats
+while a request is in flight. Older cached duplicate receipts are repaired on
+read, retaining drafts, attachments and send positions.
 
 Prompts travel in SSH stdin using `--message-file - --queue
 --require-input-prompt --no-tag`. They are not interpolated into shell code.
@@ -121,10 +124,23 @@ queue messages while an agent is busy, and the chat displays delivery receipts.
 Only a landed transcript row ID merges a local message with remote history.
 Identical prompt text is not a deduplication key.
 
+A Codex session without a native conversation ID uses Deck's guarded composer
+fallback when the host advertises it. Deck's queue worker does not forward this
+option, so this send runs directly with a bounded wait for the agent to become
+idle. An explicit `submitted` confirmation is shown as **submitted to agent**;
+it does not invent a transcript row or bind history by project directory.
+Busy or interactive sessions are not interrupted. Established Codex sessions
+and Claude continue to use the durable queue.
+
+A session marked **waiting to start** is queued behind its Deck group's
+concurrent-session limit, independently of model or reasoning settings. The
+chat explains that a slot must become available and keeps the editable draft.
+The app does not change the host's concurrency settings.
+
 The app saves a local send intent before execution. A lost response remains
 **delivery unconfirmed**; reconnecting never resends that intent. Review the
 history/queue before an explicit resend. A settled `typed`/`submitted` receipt
-also remains unconfirmed. Cancelling a queued message is only shown as cancelled
+without explicit submission confirmation also remains unconfirmed. Cancelling a queued message is only shown as cancelled
 when Deck returns the `cancelled` outcome; `already_sent` or `not_found` do not
 prove cancellation.
 

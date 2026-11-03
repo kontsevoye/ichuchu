@@ -28,16 +28,18 @@ class AgentStateStore(private val db: AppDatabase, private val hostId: Long, val
             (data["timeline"] as? JsonObject)?.let(DeckTimeline::parse)
                 ?: DeckTimeline(emptyList(), null, null),
             data.text("draft"),
-            data.objects("sends").map {
-                DeckSend(
-                    it.text("localId"),
-                    it.text("text"),
-                    it["receipt"] as? JsonObject ?: JsonObject(emptyMap()),
-                    it.text("anchorRowId").ifBlank { null },
-                    it.text("createdAt").toLongOrNull() ?: 0,
-                    it.objects("attachments").map(AgentAttachment::parse),
-                )
-            },
+            uniqueDeckSends(
+                data.objects("sends").map {
+                    DeckSend(
+                        it.text("localId"),
+                        it.text("text"),
+                        it["receipt"] as? JsonObject ?: JsonObject(emptyMap()),
+                        it.text("anchorRowId").ifBlank { null },
+                        it.text("createdAt").toLongOrNull() ?: 0,
+                        it.objects("attachments").map(AgentAttachment::parse),
+                    )
+                }
+            ),
             data.objects("attachments").map(AgentAttachment::parse),
         )
     }
@@ -63,7 +65,7 @@ class AgentStateStore(private val db: AppDatabase, private val hostId: Long, val
                 put(
                     "sends",
                     JsonArray(
-                        state.sends.map { send ->
+                        uniqueDeckSends(state.sends).map { send ->
                             buildJsonObject {
                                 put("localId", send.localId)
                                 put("text", send.text)

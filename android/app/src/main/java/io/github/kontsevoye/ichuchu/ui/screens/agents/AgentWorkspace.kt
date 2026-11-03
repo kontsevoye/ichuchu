@@ -28,6 +28,7 @@ import io.github.kontsevoye.ichuchu.service.agents.mergeDeckProjects
 import io.github.kontsevoye.ichuchu.service.agents.objects
 import io.github.kontsevoye.ichuchu.service.agents.stageAgentFile
 import io.github.kontsevoye.ichuchu.service.agents.text
+import io.github.kontsevoye.ichuchu.service.agents.uniqueDeckSends
 import io.github.kontsevoye.ichuchu.service.ssh.SshConnectionException
 import io.github.kontsevoye.ichuchu.service.terminal.HostKeyPrompt
 import io.github.kontsevoye.ichuchu.service.terminal.TerminalSessionRepository
@@ -790,7 +791,7 @@ class AgentWorkspace(
             val changed = change(old)
             val rowIds = changed.timeline.rows.mapTo(mutableSetOf()) { it.id }
             val receipts =
-                changed.sends.filterNot {
+                uniqueDeckSends(changed.sends).filterNot {
                     it.state == "landed" && it.landedRowId.isNotBlank() && it.landedRowId in rowIds
                 }
             val recentCompleted =
@@ -824,6 +825,7 @@ class AgentWorkspace(
     fun send() {
         val ui = mutable.value
         val id = ui.selectedId ?: return
+        val session = ui.selected ?: return
         val deck = client ?: return
         if (!ui.canSend || (ui.chat.draft.isBlank() && ui.chat.attachments.isEmpty())) return
         val cache = store ?: return
@@ -843,7 +845,7 @@ class AgentWorkspace(
             var started = false
             try {
                 val receipt =
-                    deck.send(id, agentAttachmentMessage(text, ui.chat.attachments)) {
+                    deck.send(session, agentAttachmentMessage(text, ui.chat.attachments)) {
                         mutateChat(id, cache) { it.copy(sends = it.sends + unknown) }
                         started = true
                     }
@@ -883,7 +885,9 @@ class AgentWorkspace(
 
     private suspend fun reconcileSends(deck: DeckClient) {
         val id = mutable.value.selectedId ?: return
-        for (send in mutable.value.chat.sends) {
+        val cache = store ?: return
+        val sends = mutable.value.chat.sends
+        for (send in sends) {
             if (send.sendId.isBlank() || (send.final && !send.uncertain)) continue
             val receipt =
                 try {
@@ -893,7 +897,7 @@ class AgentWorkspace(
                 } catch (_: Exception) {
                     continue
                 }
-            mutateChat(id) { old ->
+            mutateChat(id, cache) { old ->
                 old.copy(
                     sends =
                         old.sends.map {
@@ -914,7 +918,7 @@ class AgentWorkspace(
             }
         for (item in queued) {
             val sendId = item.text("id")
-            if (sendId.isBlank() || mutable.value.chat.sends.any { it.sendId == sendId }) continue
+            if (sendId.isBlank() || sends.any { it.sendId == sendId }) continue
             val receipt =
                 try {
                     deck.sendStatus(sendId)
@@ -923,7 +927,10 @@ class AgentWorkspace(
                 } catch (_: Exception) {
                     continue
                 }
-            mutateChat(id) {
+            mutateChat(id, cache) {
+                // Navigation may have selected another chat while the SSH request was in flight.
+                // Deduplicate against this session's state under the same lock as the write.
+                if (it.sends.any { send -> send.sendId == sendId }) return@mutateChat it
                 it.copy(
                     sends =
                         it.sends +

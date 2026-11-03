@@ -885,6 +885,16 @@ internal fun ColumnScope.AgentChat(
                 }
             }
         }
+        if (session?.status == AgentStatus.Queued) {
+            item {
+                AgentNotice(
+                    "Waiting for a session slot",
+                    "Group ${session.group.ifBlank { "on this host" }} is at its concurrent session limit. " +
+                        "This session has not started yet. Stop an unused session in Agent Deck to free a slot. " +
+                        "You can write a draft here while waiting; choosing a model does not change this limit.",
+                )
+            }
+        }
         if (
             session?.needsTerminal == true ||
                 !state.chat.timeline.status?.text("permission").isNullOrBlank()
