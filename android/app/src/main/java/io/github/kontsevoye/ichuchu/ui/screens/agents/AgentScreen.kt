@@ -1009,29 +1009,12 @@ internal fun ColumnScope.AgentChat(
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         if (state.chat.attachments.isNotEmpty()) {
-            Column(
-                Modifier.heightIn(max = if (keyboardVisible) 56.dp else 144.dp)
-                    .verticalScroll(rememberScrollState())
-            ) {
-                state.chat.attachments.forEach { file ->
-                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                        IchuText(
-                            "+ ${file.name} · ${io.github.kontsevoye.ichuchu.ui.screens.Files.formatFileSize(file.size)}",
-                            modifier = Modifier.weight(1f),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            style = type.bodySmall,
-                            color = colors.textSecondary,
-                        )
-                        AgentButton(
-                            "×",
-                            { onRemoveAttachment(file.id) },
-                            !state.sending,
-                            description = "Remove attachment ${file.name}",
-                        )
-                    }
-                }
-            }
+            AgentAttachments(
+                state.chat.attachments,
+                state.sending,
+                compact = keyboardVisible && largeFont,
+                onRemove = onRemoveAttachment,
+            )
         }
         state.upload
             ?.takeIf { it.sessionId == state.selectedId }

@@ -1,7 +1,11 @@
 package io.github.kontsevoye.ichuchu
 
 import android.app.Application
+import android.os.SystemClock
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.ime
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.test.assertContentDescriptionEquals
 import androidx.compose.ui.test.assertIsDisplayed
@@ -121,6 +125,7 @@ class AgentModeTest {
         try {
             GhosttyThemeRegistry.init(app)
             val arguments = InstrumentationRegistry.getArguments()
+            var imeBottom = 0
             compose.setContent {
                 val density = LocalDensity.current
                 CompositionLocalProvider(
@@ -130,6 +135,7 @@ class AgentModeTest {
                             arguments.getString("agentFontScale", "1.0").toFloat(),
                         )
                 ) {
+                    imeBottom = WindowInsets.ime.getBottom(LocalDensity.current)
                     IchuTheme(themeName = arguments.getString("agentTheme")) {
                         AgentScreen(vm, {}, {}, {})
                     }
@@ -214,13 +220,59 @@ class AgentModeTest {
                 .onAllNodes(hasSetTextAction())
                 .onLast()
                 .performTextInput("Screenshot and binary attachment")
+            // Compose idleness does not mean the platform IME animation has finished.
+            compose.waitUntil(5_000) { imeBottom > 0 }
+            var previousBounds = emptyList<Rect>()
+            var stableSince = SystemClock.uptimeMillis()
+            compose.waitUntil(5_000) {
+                val current =
+                    listOf(
+                        compose
+                            .onNodeWithTag("agent_chat_history")
+                            .fetchSemanticsNode()
+                            .boundsInRoot,
+                        compose
+                            .onNodeWithTag("agent_chat_attachments")
+                            .fetchSemanticsNode()
+                            .boundsInRoot,
+                        compose
+                            .onNodeWithContentDescription("Remove attachment Attachment data.bin")
+                            .fetchSemanticsNode()
+                            .boundsInRoot,
+                    )
+                if (current != previousBounds) {
+                    previousBounds = current
+                    stableSince = SystemClock.uptimeMillis()
+                }
+                SystemClock.uptimeMillis() - stableSince >= 200
+            }
             compose.onNodeWithText("send ↑").assertIsDisplayed()
-            capture("agent-attachments-composing")
             val sendBounds = compose.onNodeWithText("send ↑").fetchSemanticsNode().boundsInRoot
             assertTrue(
                 "Send must retain its full touch target above the keyboard: $sendBounds",
                 sendBounds.height >= 48 * app.resources.displayMetrics.density - 1,
             )
+            val historyBounds =
+                compose.onNodeWithTag("agent_chat_history").fetchSemanticsNode().boundsInRoot
+            val fontScale =
+                InstrumentationRegistry.getArguments().getString("agentFontScale", "1.0").toFloat()
+            assertTrue(
+                "Attachments and a multiline draft must leave at least one chat line above IME: $historyBounds",
+                historyBounds.height >= 20 * fontScale * app.resources.displayMetrics.density - 1,
+            )
+            compose
+                .onNodeWithContentDescription("Remove attachment Attachment data.bin")
+                .assertIsDisplayed()
+            val remove =
+                compose
+                    .onNodeWithContentDescription("Remove attachment Attachment data.bin")
+                    .fetchSemanticsNode()
+            assertTrue(
+                "Current attachment removal remains fully visible after IME resize: ${remove.boundsInRoot} / ${remove.size}",
+                remove.boundsInRoot.width >= remove.size.width - 1 &&
+                    remove.boundsInRoot.height >= remove.size.height - 1,
+            )
+            capture("agent-attachments-composing")
             compose.onAllNodes(hasSetTextAction()).onLast().performTextClearance()
             compose.onNodeWithText("send ↑").assertIsDisplayed().performClick()
             compose.waitUntil(20_000) {

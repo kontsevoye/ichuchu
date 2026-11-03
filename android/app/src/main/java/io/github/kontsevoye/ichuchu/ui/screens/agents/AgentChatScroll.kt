@@ -24,9 +24,12 @@ internal class AgentChatScroll(private val list: LazyListState) : NestedScrollCo
         private set
 
     private var userScrolling = false
+    var userScrollGeneration = 0
+        private set
 
     override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
         if (source == NestedScrollSource.UserInput && available.y != 0f) {
+            userScrollGeneration++
             userScrolling = true
             following = false
         }
@@ -76,6 +79,14 @@ internal class AgentChatScroll(private val list: LazyListState) : NestedScrollCo
             currentCoroutineContext().ensureActive()
         }
     }
+
+    suspend fun shiftForViewport(delta: Int) {
+        try {
+            list.scrollBy(delta.toFloat())
+        } catch (e: CancellationException) {
+            currentCoroutineContext().ensureActive()
+        }
+    }
 }
 
 @Composable
@@ -87,13 +98,42 @@ internal fun rememberAgentChatScroll(
     val scroll = remember(list, sessionId) { AgentChatScroll(list) }
     LaunchedEffect(scroll, enabled) {
         if (!enabled) return@LaunchedEffect
+        var height = 0
+        var width = 0
         snapshotFlow { Triple(scroll.following, list.layoutInfo, list.isScrollInProgress) }
             .collect { (following, layout, moving) ->
-                if (following && !moving && layout.totalItemsCount > 0 && list.canScrollForward) {
+                val previousHeight = height
+                val previousWidth = width
+                height = layout.viewportSize.height
+                width = layout.viewportSize.width
+                if (moving || layout.totalItemsCount == 0) return@collect
+                if (following && list.canScrollForward) {
                     // IME insets can publish layoutInfo during a measure pass. Scroll only after
                     // that pass, and let a gesture begun in the meantime cancel following.
                     withFrameNanos {}
                     if (scroll.following && !list.isScrollInProgress) scroll.followEnd()
+                } else if (
+                    !following &&
+                        previousHeight > 0 &&
+                        previousHeight != height &&
+                        previousWidth == width
+                ) {
+                    val gesture = scroll.userScrollGeneration
+                    withFrameNanos {}
+                    val current = list.layoutInfo.viewportSize
+                    height = current.height
+                    width = current.width
+                    if (
+                        !scroll.following &&
+                            !list.isScrollInProgress &&
+                            gesture == scroll.userScrollGeneration &&
+                            previousWidth == width
+                    ) {
+                        // Keep the content point at the lower reading edge using the viewport
+                        // delta, including IME, composer and Latest changes. New messages at
+                        // the same viewport size must never move a reading chat.
+                        scroll.shiftForViewport(previousHeight - height)
+                    }
                 }
             }
     }

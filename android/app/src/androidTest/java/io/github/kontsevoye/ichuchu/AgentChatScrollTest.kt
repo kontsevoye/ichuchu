@@ -19,17 +19,21 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.SoftwareKeyboardController
+import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onLast
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.swipeDown
+import androidx.compose.ui.test.swipeRight
 import androidx.compose.ui.test.swipeUp
 import androidx.compose.ui.unit.Density
 import androidx.test.platform.app.InstrumentationRegistry
+import io.github.kontsevoye.ichuchu.service.agents.AgentAttachment
 import io.github.kontsevoye.ichuchu.service.agents.AgentChatState
 import io.github.kontsevoye.ichuchu.service.agents.DeckCapabilities
 import io.github.kontsevoye.ichuchu.service.agents.DeckRow
@@ -116,20 +120,29 @@ class AgentChatScrollTest {
                             .imePadding()
                     ) {
                         AgentChat(
-                            ui,
-                            { ui = ui.copy(chat = ui.chat.copy(draft = it)) },
-                            {},
-                            {},
-                            {},
-                            {},
-                            {},
-                            {},
-                            {},
-                            {},
-                            {},
-                            {},
-                            {},
-                            list,
+                            state = ui,
+                            onDraft = { ui = ui.copy(chat = ui.chat.copy(draft = it)) },
+                            onSend = {},
+                            onOlder = {},
+                            onCancel = {},
+                            onRecover = {},
+                            onTerminal = {},
+                            onRecall = {},
+                            onChooseHistory = {},
+                            onRetryHistory = {},
+                            onAttach = {},
+                            onRemoveAttachment = { id ->
+                                ui =
+                                    ui.copy(
+                                        chat =
+                                            ui.chat.copy(
+                                                attachments =
+                                                    ui.chat.attachments.filterNot { it.id == id }
+                                            )
+                                    )
+                            },
+                            onCancelUpload = {},
+                            list = list,
                         )
                     }
                 }
@@ -223,6 +236,22 @@ class AgentChatScrollTest {
         )
     }
 
+    private fun bottomAnchor(): Pair<Any, Int> =
+        compose.runOnIdle {
+            val layout = list.layoutInfo
+            val last = layout.visibleItemsInfo.last { it.offset < layout.viewportEndOffset }
+            last.key to layout.viewportEndOffset - last.offset
+        }
+
+    private fun sameBottomAnchor(expected: Pair<Any, Int>) {
+        val actual = bottomAnchor()
+        assertEquals("Keep the message at the lower reading edge", expected.first, actual.first)
+        assertTrue(
+            "Keep the text at the lower reading edge: $expected -> $actual",
+            abs(expected.second - actual.second) <= 1,
+        )
+    }
+
     private fun readEarlier() {
         compose.onNodeWithTag("agent_chat_history").performTouchInput { swipeDown() }
         compose.waitForIdle()
@@ -281,15 +310,17 @@ class AgentChatScrollTest {
         atEnd()
         readEarlier()
         val reading = anchor()
+        val bottom = bottomAnchor()
         capture("scroll-reading-before")
         append(31)
         sameAnchor(reading)
         openKeyboard()
-        sameAnchor(reading)
+        sameBottomAnchor(bottom)
         capture("scroll-reading-keyboard")
         append(32)
-        sameAnchor(reading)
+        sameBottomAnchor(bottom)
         hideKeyboard()
+        sameBottomAnchor(bottom)
         sameAnchor(reading)
         capture("scroll-reading-restored")
         assertTrue(list.canScrollForward)
@@ -303,10 +334,11 @@ class AgentChatScrollTest {
         atEnd()
         readEarlier()
         val reading = anchor()
+        val bottom = bottomAnchor()
         append(31)
         sameAnchor(reading)
         hideKeyboard()
-        sameAnchor(reading)
+        sameBottomAnchor(bottom)
         compose.onNodeWithText("↓ latest").performClick()
         atEnd()
         append(32)
@@ -357,5 +389,121 @@ class AgentChatScrollTest {
         }
         hideKeyboard()
         atEnd()
+    }
+
+    @Test
+    fun multipleAttachmentsShowCountAndNewestFileAndCanBeScrolledToRemove() {
+        show()
+        atEnd()
+        openKeyboard()
+        repeat(3) { index ->
+            compose.runOnIdle {
+                ui =
+                    ui.copy(
+                        chat =
+                            ui.chat.copy(
+                                attachments =
+                                    ui.chat.attachments +
+                                        AgentAttachment(
+                                            "file-$index",
+                                            "Screenshot-$index.png",
+                                            "image/png",
+                                            1024,
+                                            "/fixture/file-$index",
+                                        )
+                            )
+                    )
+            }
+            compose.waitForIdle()
+            compose
+                .onNodeWithContentDescription("Remove attachment Screenshot-$index.png")
+                .assertIsDisplayed()
+        }
+        compose.onNodeWithContentDescription("3 files attached").assertIsDisplayed()
+        hideKeyboard()
+        openKeyboard()
+        val newest =
+            compose
+                .onNodeWithContentDescription("Remove attachment Screenshot-2.png")
+                .fetchSemanticsNode()
+        assertTrue(
+            "Newest remove stays fully visible through IME resize: ${newest.boundsInRoot} / ${newest.size}",
+            newest.boundsInRoot.width >= newest.size.width - 1 &&
+                newest.boundsInRoot.height >= newest.size.height - 1,
+        )
+        capture("attachments-three-keyboard")
+        compose.onNodeWithTag("agent_chat_attachments").performTouchInput { swipeRight() }
+        compose.onNodeWithTag("agent_chat_attachments").performTouchInput { swipeRight() }
+        compose.onNodeWithContentDescription("Remove attachment Screenshot-0.png").performClick()
+        compose.onNodeWithContentDescription("2 files attached").assertIsDisplayed()
+        compose.runOnIdle {
+            assertEquals(listOf("file-1", "file-2"), ui.chat.attachments.map { it.id })
+        }
+        val sendBounds = compose.onNodeWithText("send ↑").fetchSemanticsNode().boundsInRoot
+        val density =
+            InstrumentationRegistry.getInstrumentation()
+                .targetContext
+                .resources
+                .displayMetrics
+                .density
+        assertTrue(
+            "Send keeps its full touch target above IME",
+            sendBounds.height >= 48 * density - 1,
+        )
+        hideKeyboard()
+        compose.onNodeWithContentDescription("2 files attached").assertIsDisplayed()
+        capture("attachments-two-restored")
+    }
+
+    @Test
+    fun readingBottomSurvivesRepeatedKeyboardAndComposerResizes() {
+        show()
+        atEnd()
+        readEarlier()
+        val top = anchor()
+        val bottom = bottomAnchor()
+        compose.runOnIdle {
+            ui =
+                ui.copy(
+                    chat =
+                        ui.chat.copy(
+                            attachments =
+                                listOf(
+                                    AgentAttachment(
+                                        "file",
+                                        "Screenshot.png",
+                                        "image/png",
+                                        1024,
+                                        "/fixture/file",
+                                    )
+                                )
+                        )
+                )
+        }
+        settledViewport()
+        sameBottomAnchor(bottom)
+        val topWithFiles = anchor()
+        repeat(3) {
+            openKeyboard()
+            sameBottomAnchor(bottom)
+            compose.runOnIdle {
+                ui = ui.copy(chat = ui.chat.copy(draft = "Multiline draft. ".repeat(30)))
+            }
+            settledViewport()
+            sameBottomAnchor(bottom)
+            append(31 + it)
+            sameBottomAnchor(bottom)
+            compose.runOnIdle { ui = ui.copy(chat = ui.chat.copy(draft = "")) }
+            settledViewport()
+            sameBottomAnchor(bottom)
+            hideKeyboard()
+            sameBottomAnchor(bottom)
+            sameAnchor(topWithFiles)
+            assertTrue(list.canScrollForward)
+        }
+        compose.runOnIdle { ui = ui.copy(chat = ui.chat.copy(attachments = emptyList())) }
+        settledViewport()
+        sameBottomAnchor(bottom)
+        sameAnchor(top)
     }
 }

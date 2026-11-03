@@ -73,8 +73,12 @@ matching title or path and never retries launch automatically.
 
 Use **+ file** beside the composer to choose photos, documents or any other file
 through Android's system picker. A message can have up to four attachments,
-20 MiB each. The app shows upload progress and a cancel action; remove a selected
-attachment with **×**. An attachment-only message can be sent without typing text.
+20 MiB each. The app shows upload progress and a cancel action. Uploaded files
+appear in a horizontal strip with a visible count; the newest file is brought
+into view. Swipe through the strip and remove a selected attachment with **×**.
+An attachment-only message can be sent without typing text.
+With large text and the keyboard open, the strip uses one row and a selected/limit
+counter such as **2/4**, leaving room to read the conversation.
 
 Selecting a file uploads a bounded temporary copy over a separate SSH connection,
 so session status monitoring continues. The upload uses the existing authenticated
@@ -98,9 +102,11 @@ At the end of a chat, the view follows new messages and updates to a streaming
 reply. It also keeps the end visible as the keyboard opens or closes and the
 composer changes height. A reply taller than the screen is aligned at its end.
 
-Scrolling up suspends following. Incoming messages and keyboard show/hide retain
-the message and offset being read. Scroll back to the end or use **↓ latest** to
-resume following.
+Scrolling up suspends following. Incoming messages leave the reading position
+alone. When the keyboard or composer changes height, the text at the lower edge
+of the visible history moves with that edge and returns when the viewport grows.
+Scrolling while typing establishes a new reading position. Scroll back to the
+end or use **↓ latest** to resume following.
 
 Native history keeps Agent Deck's source order. Local delivery records are placed
 at the original send boundary, with server timestamps used for older cached
