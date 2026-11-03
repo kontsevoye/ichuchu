@@ -94,6 +94,14 @@ scratch files are excluded from portable host/key backups.
 
 ### Message order and delivery
 
+At the end of a chat, the view follows new messages and updates to a streaming
+reply. It also keeps the end visible as the keyboard opens or closes and the
+composer changes height. A reply taller than the screen is aligned at its end.
+
+Scrolling up suspends following. Incoming messages and keyboard show/hide retain
+the message and offset being read. Scroll back to the end or use **↓ latest** to
+resume following.
+
 Native history keeps Agent Deck's source order. Local delivery records are placed
 at the original send boundary, with server timestamps used for older cached
 receipts, so a delayed receipt stays beside its request instead of appearing

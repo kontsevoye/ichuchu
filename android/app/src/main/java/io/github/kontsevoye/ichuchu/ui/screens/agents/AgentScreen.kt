@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
@@ -43,8 +44,10 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -816,7 +819,7 @@ private fun AgentPicker(
 }
 
 @Composable
-private fun ColumnScope.AgentChat(
+internal fun ColumnScope.AgentChat(
     state: AgentUiState,
     onDraft: (String) -> Unit,
     onSend: () -> Unit,
@@ -830,31 +833,21 @@ private fun ColumnScope.AgentChat(
     onAttach: () -> Unit,
     onRemoveAttachment: (String) -> Unit,
     onCancelUpload: () -> Unit,
+    list: LazyListState = rememberLazyListState(),
 ) {
     val colors = IchuColors.current
     val type = IchuTypography.current
     val session = state.selected
-    val list = rememberLazyListState()
     val scope = rememberCoroutineScope()
     val density = LocalDensity.current
     val keyboardVisible = WindowInsets.ime.getBottom(density) > 0
     val largeFont = density.fontScale >= 1.5f
-    var initialScrollDone by remember(state.selectedId) { mutableStateOf(false) }
     val blocks = remember(state.chat.timeline.rows, state.chat.sends) { chatBlocks(state.chat) }
+    val scroll =
+        rememberAgentChatScroll(list, state.selectedId, !state.chatLoading && blocks.isNotEmpty())
     val atBottom by remember { derivedStateOf { !list.canScrollForward } }
-    LaunchedEffect(state.selectedId, blocks.isNotEmpty(), state.chatLoading) {
-        if (!initialScrollDone && blocks.isNotEmpty() && !state.chatLoading) {
-            list.scrollToItem(Int.MAX_VALUE)
-            initialScrollDone = true
-        }
-    }
-    LaunchedEffect(blocks.lastOrNull()) {
-        if (atBottom && list.layoutInfo.totalItemsCount > 0) {
-            list.animateScrollToItem(list.layoutInfo.totalItemsCount - 1)
-        }
-    }
     LazyColumn(
-        Modifier.weight(1f).fillMaxWidth(),
+        Modifier.weight(1f).fillMaxWidth().nestedScroll(scroll).testTag("agent_chat_history"),
         state = list,
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
@@ -1003,16 +996,10 @@ private fun ColumnScope.AgentChat(
             ?.takeIf { it.isNotBlank() }
             ?.let { verb -> item { IchuText(verb, style = type.bodySmall, color = colors.accent) } }
     }
-    if (!atBottom && !keyboardVisible) {
+    if (!scroll.following && !atBottom && !keyboardVisible) {
         AgentButton(
             "↓ latest",
-            {
-                scope.launch {
-                    if (list.layoutInfo.totalItemsCount > 0) {
-                        list.animateScrollToItem(list.layoutInfo.totalItemsCount - 1)
-                    }
-                }
-            },
+            { scope.launch { scroll.jumpToLatest() } },
             modifier = Modifier.align(Alignment.End).padding(end = 16.dp),
         )
     }
