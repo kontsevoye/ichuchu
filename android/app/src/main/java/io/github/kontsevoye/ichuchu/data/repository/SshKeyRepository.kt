@@ -5,6 +5,7 @@ import io.github.kontsevoye.ichuchu.data.db.SshKeyDao
 import io.github.kontsevoye.ichuchu.model.SshKey
 import io.github.kontsevoye.ichuchu.service.ssh.Ed25519KeyGenerator
 import io.github.kontsevoye.ichuchu.service.ssh.SshKeyImporter
+import io.github.kontsevoye.ichuchu.service.ssh.hasPrivateKeyEnvelope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.withContext
@@ -45,7 +46,7 @@ class SshKeyRepository(
     suspend fun import(nameHint: String, privateKeyPem: String): ImportResult {
         val pem = privateKeyPem.trim()
         if (pem.isBlank()) return ImportResult.Blank
-        if (!pem.contains("PRIVATE KEY")) return ImportResult.NotAPrivateKey
+        if (!hasPrivateKeyEnvelope(pem)) return ImportResult.NotAPrivateKey
 
         val derived = withContext(Dispatchers.Default) { keyImporter.derivePublicKey(pem) }
         val base = nameHint.trim().ifBlank { "imported-key" }

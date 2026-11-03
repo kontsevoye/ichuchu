@@ -679,10 +679,13 @@ class TerminalViewModel(application: Application) : AndroidViewModel(application
                     val entries =
                         rows.map { row ->
                             val parts = row.split('\t')
-                            val name = parts.getOrNull(0).orEmpty()
-                            val kind = parts.getOrNull(1).orEmpty()
-                            val size = parts.getOrNull(2)?.toLongOrNull()
-                            val mtime = parts.getOrNull(3)?.toLongOrNull()
+                            // Native rows end in four metadata fields; filenames may contain tabs.
+                            require(parts.size >= 5) { "Malformed SFTP directory entry" }
+                            val name = parts.dropLast(4).joinToString("\t")
+                            val metadata = parts.takeLast(4)
+                            val kind = metadata[0]
+                            val size = metadata[1].toLongOrNull()
+                            val mtime = metadata[2].toLongOrNull()
                             val normalizedBase = targetPath.trimEnd('/').ifEmpty { "/" }
                             val type =
                                 when (kind) {
@@ -700,7 +703,7 @@ class TerminalViewModel(application: Application) : AndroidViewModel(application
                                         "$normalizedBase/$name"
                                     },
                                 type = type,
-                                sizeBytes = if (size == null || size <= 0L) null else size,
+                                sizeBytes = if (size == null || size < 0L) null else size,
                                 modifiedAtText = mtime?.takeIf { it > 0L }?.let { formatMtime(it) },
                             )
                         }
@@ -735,27 +738,46 @@ class TerminalViewModel(application: Application) : AndroidViewModel(application
         refreshJob.invokeOnCompletion { fileBrowserRefreshJobs.remove(tabId, refreshJob) }
     }
 
-    suspend fun beginUpload(fileName: String) {
-        val tabId = activeTabId.value ?: return
-        val current = _fileBrowserStateByTab.value[tabId] ?: return
-        val targetPath = current.currentPath.trimEnd('/') + "/" + fileName
-        sessionRepository.sftpOpenWrite(tabId, targetPath)
+    data class UploadDestination(val tabId: String, val directory: String)
+
+    data class UploadTarget(val destination: UploadDestination, val path: String)
+
+    fun uploadDestination(): UploadDestination? {
+        val tabId = activeTabId.value ?: return null
+        val directory = _fileBrowserStateByTab.value[tabId]?.currentPath ?: return null
+        return UploadDestination(tabId, directory)
     }
 
-    suspend fun writeUploadChunk(data: ByteArray) {
-        val tabId = activeTabId.value ?: return
-        sessionRepository.sftpWriteChunk(tabId, data)
+    suspend fun beginUpload(fileName: String, destination: UploadDestination): UploadTarget {
+        require(
+            fileName.isNotBlank() &&
+                fileName !in setOf(".", "..") &&
+                fileName.none { it == '/' || it == '\\' || it == '\u0000' }
+        ) {
+            "Invalid upload filename"
+        }
+        check(tabExists(destination.tabId)) { "Upload connection was closed" }
+        val target = UploadTarget(destination, destination.directory.trimEnd('/') + "/" + fileName)
+        sessionRepository.sftpOpenWrite(destination.tabId, target.path)
+        return target
     }
 
-    suspend fun finishUpload() {
-        val tabId = activeTabId.value ?: return
-        sessionRepository.sftpCloseWrite(tabId)
-        refreshFileBrowser()
+    suspend fun writeUploadChunk(target: UploadTarget, data: ByteArray) {
+        check(tabExists(target.destination.tabId)) { "Upload connection was closed" }
+        check(sessionRepository.sftpWriteChunk(target.destination.tabId, data) == data.size) {
+            "Upload did not write the complete chunk"
+        }
     }
 
-    fun setUploadProgress(progress: UploadProgress?) {
-        val tabId = activeTabId.value ?: return
-        updateFileBrowserState(tabId) { it.copy(uploadProgress = progress) }
+    suspend fun finishUpload(target: UploadTarget) {
+        sessionRepository.sftpCloseWrite(target.destination.tabId)
+        refreshFileBrowser(target.destination.tabId)
+    }
+
+    fun setUploadProgress(destination: UploadDestination, progress: UploadProgress?) {
+        if (tabExists(destination.tabId)) {
+            updateFileBrowserState(destination.tabId) { it.copy(uploadProgress = progress) }
+        }
     }
 
     fun goUpDirectory() {

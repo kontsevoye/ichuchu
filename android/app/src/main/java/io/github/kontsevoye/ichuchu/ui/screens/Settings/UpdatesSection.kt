@@ -65,11 +65,12 @@ fun UpdatesSection() {
             style = typography.bodySmall,
             color = colors.textMuted,
         )
-        if (state.lastChecked > 0)
+        if (state.lastChecked > 0) {
             IchuText(
                 "last successful check: ${DateFormat.getDateTimeInstance().format(Date(state.lastChecked))}",
                 style = typography.bodySmall,
             )
+        }
         val busy =
             state.phase in
                 setOf(
@@ -124,12 +125,13 @@ fun UpdatesSection() {
                 IchuText("releases")
             }
         }
-        if (state.phase == UpdatePhase.Downloading)
+        if (state.phase == UpdatePhase.Downloading) {
             IchuButton(onClick = updates::cancelDownload) { IchuText("cancel download") }
+        }
         if (!busy && state.candidate != null) {
-            if (updates.readyFile() == null)
+            if (updates.readyFile() == null) {
                 IchuButton(onClick = updates::download) { IchuText("download APK") }
-            else if (state.phase == UpdatePhase.PermissionRequired && Build.VERSION.SDK_INT >= 26)
+            } else if (state.phase == UpdatePhase.PermissionRequired && Build.VERSION.SDK_INT >= 26) {
                 IchuButton(
                     onClick = {
                         context.startActivity(
@@ -142,11 +144,14 @@ fun UpdatesSection() {
                 ) {
                     IchuText("allow app installs")
                 }
-            else IchuButton(onClick = { updates.install() }) { IchuText("install update") }
-            if (state.phase == UpdatePhase.PermissionRequired)
+            } else {
+                IchuButton(onClick = { updates.install() }) { IchuText("install update") }
+            }
+            if (state.phase == UpdatePhase.PermissionRequired) {
                 IchuButton(onClick = { updates.install() }, variant = IchuButtonVariant.Outlined) {
                     IchuText("permission granted · retry install")
                 }
+            }
             if (state.phase == UpdatePhase.SessionsOpen) {
                 IchuText(
                     "Installation replaces this app process. SSH, Mosh and local shells will stop.",
@@ -158,13 +163,19 @@ fun UpdatesSection() {
             }
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            IchuText("check automatically (24h)", style = typography.label)
+            IchuText(
+                "check automatically (24h)",
+                style = typography.label,
+                modifier = Modifier.weight(1f),
+            )
             IchuSwitch(
                 checked = automatic,
+                label = "Check automatically every 24 hours",
                 onCheckedChange = { value ->
                     updates.setAutomatic(value)
-                    if (value && Build.VERSION.SDK_INT >= 33)
+                    if (value && Build.VERSION.SDK_INT >= 33) {
                         notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+                    }
                 },
             )
         }

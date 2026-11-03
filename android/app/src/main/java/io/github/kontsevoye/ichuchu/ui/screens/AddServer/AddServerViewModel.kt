@@ -67,6 +67,9 @@ class AddServerViewModel(application: Application, private val hostId: Long?) : 
     private val _form = MutableStateFlow(AddServerForm())
     val form: StateFlow<AddServerForm> = _form.asStateFlow()
 
+    private val _isSaving = MutableStateFlow(false)
+    val isSaving: StateFlow<Boolean> = _isSaving.asStateFlow()
+
     private val _testState = MutableStateFlow(ConnectionTestState())
     val testState: StateFlow<ConnectionTestState> = _testState.asStateFlow()
 
@@ -147,43 +150,53 @@ class AddServerViewModel(application: Application, private val hostId: Long?) : 
     }
 
     fun updateOpenMode(mode: HostOpenMode) {
+        cancelTest()
         _form.value = _form.value.copy(openMode = mode)
     }
 
     fun updateDeckProfile(profile: String) {
+        cancelTest()
         _form.value = _form.value.copy(deckProfile = profile)
     }
 
     fun updateDeckExecutable(executable: String) {
+        cancelTest()
         _form.value = _form.value.copy(deckExecutable = executable)
     }
 
     fun updateHost(host: String) {
+        cancelTest()
         _form.value = _form.value.copy(host = host.filterNot { it.isWhitespace() })
     }
 
     fun updatePort(port: String) {
+        cancelTest()
         _form.value = _form.value.copy(port = port)
     }
 
     fun updateUsername(username: String) {
+        cancelTest()
         _form.value = _form.value.copy(username = username)
     }
 
     fun updatePassword(password: String) {
+        cancelTest()
         _form.value = _form.value.copy(password = password)
     }
 
     fun updateKeyPassphrase(passphrase: String) {
+        cancelTest()
         _form.value = _form.value.copy(keyPassphrase = passphrase)
     }
 
     fun selectStoredKey(keyId: Long?) {
+        cancelTest()
         viewModelScope.launch {
             val selected =
                 keyId?.let { id ->
                     keys.value.firstOrNull { it.id == id } ?: sshKeyRepository.getById(id)
                 }
+            cancelTest()
             _form.value =
                 _form.value.copy(
                     keyId = keyId,
@@ -199,19 +212,22 @@ class AddServerViewModel(application: Application, private val hostId: Long?) : 
             val current = _form.value
             val baseName = if (nameHint.isNotBlank()) nameHint else current.name
             when (val result = sshKeyRepository.generate(baseName, current.keyPassphrase)) {
-                is KeyGenerationResult.Success ->
+                is KeyGenerationResult.Success -> {
+                    cancelTest()
                     _form.value =
                         _form.value.copy(
                             keyId = result.key.id,
                             privateKeyPem = result.key.privateKeyPem,
                             publicKeyOpenSsh = result.key.publicKeyOpenSsh,
                         )
+                }
                 KeyGenerationResult.Failed -> _errorMessage.emit("Key generation failed")
             }
         }
     }
 
     fun updateTransport(transport: Transport) {
+        cancelTest()
         val current = _form.value
         val nextAuthMethod =
             when {
@@ -229,6 +245,7 @@ class AddServerViewModel(application: Application, private val hostId: Long?) : 
     }
 
     fun updateAuthMethod(authMethod: AuthMethod) {
+        cancelTest()
         val current = _form.value
         if (authMethod == AuthMethod.None) {
             _form.value =
@@ -239,6 +256,7 @@ class AddServerViewModel(application: Application, private val hostId: Long?) : 
     }
 
     fun updateRequireAuthOnConnect(enabled: Boolean) {
+        cancelTest()
         _form.value = _form.value.copy(requireAuthOnConnect = enabled)
     }
 
@@ -255,6 +273,7 @@ class AddServerViewModel(application: Application, private val hostId: Long?) : 
     }
 
     fun addJumpHost(id: Long) {
+        cancelTest()
         val current = _form.value
         if (current.jumpHostIds.size < 3 && id !in current.jumpHostIds && id != current.id) {
             _form.value = current.copy(jumpHostIds = current.jumpHostIds + id)
@@ -262,10 +281,12 @@ class AddServerViewModel(application: Application, private val hostId: Long?) : 
     }
 
     fun removeJumpHost(id: Long) {
+        cancelTest()
         _form.value = _form.value.copy(jumpHostIds = _form.value.jumpHostIds - id)
     }
 
     fun moveJumpHost(index: Int, delta: Int) {
+        cancelTest()
         val ids = _form.value.jumpHostIds.toMutableList()
         val to = index + delta
         if (index !in ids.indices || to !in ids.indices) return
@@ -275,6 +296,7 @@ class AddServerViewModel(application: Application, private val hostId: Long?) : 
     }
 
     fun testConnection(verified: Boolean = false) {
+        if (!_form.value.canTest()) return
         if (requiresTestVerification && !verified) return
         cancelTest()
         val current = _form.value
@@ -441,16 +463,20 @@ class AddServerViewModel(application: Application, private val hostId: Long?) : 
     fun save(onComplete: () -> Unit) {
         val current = _form.value
         val host = current.host.filterNot { it.isWhitespace() }
-        if (!current.canSave() || host.isBlank()) return
+        if (_isSaving.value || !current.canSave() || host.isBlank()) return
         val username = current.username.trim()
         if (username.isBlank()) return
 
+        _isSaving.value = true
         viewModelScope.launch {
             try {
-                hostRepository.upsert(current.toProfile())
+                val savedId = hostRepository.upsert(current.toProfile())
+                _form.value = _form.value.copy(id = savedId)
             } catch (e: Exception) {
                 _errorMessage.emit(e.message ?: "Invalid route")
                 return@launch
+            } finally {
+                _isSaving.value = false
             }
             onComplete()
         }
@@ -479,7 +505,9 @@ data class AddServerForm(
     val deckExecutable: String = "",
 )
 
-fun AddServerForm.canSave(): Boolean {
+fun AddServerForm.canSave(): Boolean = name.isNotBlank() && canTest()
+
+fun AddServerForm.canTest(): Boolean {
     if (
         openMode == HostOpenMode.Agents &&
             (transport == Transport.LocalShell ||
@@ -488,7 +516,7 @@ fun AddServerForm.canSave(): Boolean {
     ) {
         return false
     }
-    if (name.isBlank() || host.isBlank() || username.isBlank() || port.toIntOrNull() !in 1..65535) {
+    if (host.isBlank() || username.isBlank() || port.toIntOrNull() !in 1..65535) {
         return false
     }
     if (jumpHostIds.isNotEmpty() && transport != Transport.SSH) return false

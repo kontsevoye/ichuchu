@@ -403,11 +403,12 @@ fun TerminalScreen(
     val currentTheme by settingsRepo.themeName.collectAsStateWithLifecycle()
     val themeMode by settingsRepo.themeMode.collectAsStateWithLifecycle()
     val lightThemeName by settingsRepo.lightThemeName.collectAsStateWithLifecycle()
-    val resolvedThemeName = resolveActiveThemeName(
-        themeMode = themeMode,
-        darkThemeName = currentTheme,
-        lightThemeName = lightThemeName,
-    )
+    val resolvedThemeName =
+        resolveActiveThemeName(
+            themeMode = themeMode,
+            darkThemeName = currentTheme,
+            lightThemeName = lightThemeName,
+        )
     val tabMode by settingsRepo.terminalTabMode.collectAsStateWithLifecycle()
     val currentAccessoryLayoutIds by settingsRepo.accessoryLayoutIds.collectAsStateWithLifecycle()
     val useSingleRowAccessoryBar by settingsRepo.accessoryBarSingleRow.collectAsStateWithLifecycle()
@@ -426,9 +427,7 @@ fun TerminalScreen(
         if (keepScreenAwake) {
             window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         }
-        onDispose {
-            window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        }
+        onDispose { window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) }
     }
 
     val accessoryLayout =
@@ -436,7 +435,9 @@ fun TerminalScreen(
             TerminalAccessoryLayoutStore.resolveSelectedLayout(currentAccessoryLayoutIds)
         }
     val ghosttyTheme =
-        remember(context, resolvedThemeName) { GhosttyThemeRegistry.getTheme(context, resolvedThemeName) }
+        remember(context, resolvedThemeName) {
+            GhosttyThemeRegistry.getTheme(context, resolvedThemeName)
+        }
     val isDarkTheme = (ghosttyTheme?.background ?: colors.background).luminance() < 0.5f
     var selection by remember { mutableStateOf<TerminalSelection?>(null) }
     var selectionState by remember { mutableStateOf<TerminalSelectionState?>(null) }
@@ -493,34 +494,42 @@ fun TerminalScreen(
             showCustomActionsFab,
         ) {
             val isStrip = tabMode == TerminalTabMode.Strip
-            val builtinCommandHandlers: Map<BuiltinCommand, () -> Unit> = mapOf(
-                BuiltinCommand.Tabs to {
-                    if (isStrip) {
-                        showGlobalTabManager = true
-                    } else {
-                        showTabSheet = true
-                    }
-                },
-                BuiltinCommand.NewTab to {
-                    vm.duplicateActiveTab()
-                    vm.selectConnectionTab(ConnectionTab.Terminal)
-                    showTabSheet = false
-                },
-                BuiltinCommand.Close to {
-                    val activeId = vm.activeTabId.value
-                    if (activeId != null) vm.closeTab(activeId)
-                },
-                BuiltinCommand.Actions to { settingsRepo.setShowCustomActionsFab(!showCustomActionsFab) },
-                BuiltinCommand.Settings to { onOpenSettings() },
-            )
+            val builtinCommandHandlers: Map<BuiltinCommand, () -> Unit> =
+                mapOf(
+                    BuiltinCommand.Tabs to
+                        {
+                            if (isStrip) {
+                                showGlobalTabManager = true
+                            } else {
+                                showTabSheet = true
+                            }
+                        },
+                    BuiltinCommand.NewTab to
+                        {
+                            vm.duplicateActiveTab()
+                            vm.selectConnectionTab(ConnectionTab.Terminal)
+                            showTabSheet = false
+                        },
+                    BuiltinCommand.Close to
+                        {
+                            val activeId = vm.activeTabId.value
+                            if (activeId != null) vm.closeTab(activeId)
+                        },
+                    BuiltinCommand.Actions to
+                        {
+                            settingsRepo.setShowCustomActionsFab(!showCustomActionsFab)
+                        },
+                    BuiltinCommand.Settings to { onOpenSettings() },
+                )
             IchuchuKeyBindings.build(
                 builtinShortcuts = builtinShortcuts,
                 builtinCommandHandlers = builtinCommandHandlers,
                 customGroups = currentTerminalCustomKeyGroups,
                 onDispatchAction = { action ->
                     val decoded = decodeCustomActionValue(action.payload)
-                    val rawText = decoded.text +
-                        if (CustomActionModifier.Enter in decoded.modifiers) "\n" else ""
+                    val rawText =
+                        decoded.text +
+                            if (CustomActionModifier.Enter in decoded.modifiers) "\n" else ""
                     val actionModifierState = modifierStateForCustomAction(decoded.modifiers)
                     vm.dispatchTextWithModifierState(rawText, actionModifierState)
                 },
@@ -529,9 +538,7 @@ fun TerminalScreen(
         }
     val multiplexerState by vm.multiplexerState.collectAsStateWithLifecycle()
 
-    LaunchedEffect(terminalFontSizeSp) {
-        settingsRepo.setTerminalFontSize(terminalFontSizeSp)
-    }
+    LaunchedEffect(terminalFontSizeSp) { settingsRepo.setTerminalFontSize(terminalFontSizeSp) }
 
     LaunchedEffect(openLocalShell) {
         if (!openLocalShell) return@LaunchedEffect
@@ -568,19 +575,18 @@ fun TerminalScreen(
         remember(tabs, hostId, openLocalShell) {
             when {
                 openLocalShell ->
-                    tabs.filter { it.spec.hostId == null && it.spec.transport == Transport.LocalShell }
+                    tabs.filter {
+                        it.spec.hostId == null && it.spec.transport == Transport.LocalShell
+                    }
                 hostId != null -> tabs.filter { it.spec.hostId == hostId }
                 else -> emptyList()
             }
         }
     val activeHostCount =
-        remember(tabs) {
-            tabs.map { it.spec.hostId ?: it.spec.sessionKey }
-                .distinct()
-                .size
-        }
-    val currentHostName = activeTab?.spec?.displayName?.takeIf { it.isNotBlank() }
-        ?: activeTab?.spec?.host?.takeIf { it.isNotBlank() }
+        remember(tabs) { tabs.map { it.spec.hostId ?: it.spec.sessionKey }.distinct().size }
+    val currentHostName =
+        activeTab?.spec?.displayName?.takeIf { it.isNotBlank() }
+            ?: activeTab?.spec?.host?.takeIf { it.isNotBlank() }
     val pickerScope = rememberCoroutineScope()
 
     val openPreparedTab: (TabSpec, Boolean, Boolean) -> Unit =
@@ -638,7 +644,9 @@ fun TerminalScreen(
     }
     val pickerCurrentHostId = activeTab?.spec?.hostId ?: hostId
     val pickerCurrentHostName =
-        currentHostName ?: hosts.firstOrNull { it.id == pickerCurrentHostId }?.name ?: "current host"
+        currentHostName
+            ?: hosts.firstOrNull { it.id == pickerCurrentHostId }?.name
+            ?: "current host"
     val pickerOtherHosts =
         remember(hosts, pickerCurrentHostId) { hosts.filter { it.id != pickerCurrentHostId } }
     val openNewSessionForHost: (Long) -> Unit = { pickerHostId ->
@@ -685,7 +693,12 @@ fun TerminalScreen(
     TerminalRouteExitEffect(
         hostId = hostId,
         openLocalShell = openLocalShell,
-        hasTabs = if (tabMode == TerminalTabMode.Strip && !openLocalShell) tabs.isNotEmpty() else hasTabsForHost,
+        hasTabs =
+            if (tabMode == TerminalTabMode.Strip && !openLocalShell) {
+                tabs.isNotEmpty()
+            } else {
+                hasTabsForHost
+            },
         onBack = onBack,
     )
 
@@ -693,7 +706,11 @@ fun TerminalScreen(
         if (!showTabSheet || tabsForHost.isEmpty()) return@LaunchedEffect
         val activeIndex = tabsForHost.indexOfFirst { it.id == activeTabId }
         focusedTabIndex =
-            if (activeIndex >= 0) activeIndex else focusedTabIndex.coerceIn(0, tabsForHost.lastIndex)
+            if (activeIndex >= 0) {
+                activeIndex
+            } else {
+                focusedTabIndex.coerceIn(0, tabsForHost.lastIndex)
+            }
     }
 
     LaunchedEffect(showTabSheet, activeTab?.id) {
@@ -826,7 +843,8 @@ fun TerminalScreen(
                             TerminalRecoveryActions(
                                 message = errorMessage,
                                 isMultiplexerPreflight = preflightError != null,
-                                dismissMultiplexerLabel = if (multiplexerState.reconnectRecovery) "dismiss" else "back",
+                                dismissMultiplexerLabel =
+                                    if (multiplexerState.reconnectRecovery) "dismiss" else "back",
                                 onRetryMultiplexer = vm::retryPendingMultiplexerOpen,
                                 onConnectWithoutMultiplexer = {
                                     if (vm.connectPendingWithoutMultiplexer()) {
@@ -875,7 +893,8 @@ fun TerminalScreen(
                         TerminalRecoveryActions(
                             message = errorMessage,
                             isMultiplexerPreflight = preflightError != null,
-                            dismissMultiplexerLabel = if (multiplexerState.reconnectRecovery) "dismiss" else "back",
+                            dismissMultiplexerLabel =
+                                if (multiplexerState.reconnectRecovery) "dismiss" else "back",
                             onRetryMultiplexer = vm::retryPendingMultiplexerOpen,
                             onConnectWithoutMultiplexer = {
                                 if (vm.connectPendingWithoutMultiplexer()) {
@@ -891,11 +910,12 @@ fun TerminalScreen(
         }
 
         SessionStatus.Connecting -> {
-            val hostLabel = if (tabMode == TerminalTabMode.Strip) {
-                activeTab?.spec?.tabLabel?.let { "$it..." } ?: "..."
-            } else {
-                activeTabForHost?.spec?.host?.let { "$it..." } ?: "..."
-            }
+            val hostLabel =
+                if (tabMode == TerminalTabMode.Strip) {
+                    activeTab?.spec?.tabLabel?.let { "$it..." } ?: "..."
+                } else {
+                    activeTabForHost?.spec?.host?.let { "$it..." } ?: "..."
+                }
             if (tabMode == TerminalTabMode.Strip) {
                 Column(modifier = screenInsetsModifier.fillMaxSize()) {
                     TerminalTabStrip(
@@ -937,9 +957,7 @@ fun TerminalScreen(
                 var modifierState by remember { mutableStateOf(ModifierState()) }
                 val inputViewRef = remember { mutableStateOf<TerminalInputView?>(null) }
                 var menuSize by remember { mutableStateOf(IntSize.Zero) }
-                val clipboard = remember {
-                    context.getSystemService(ClipboardManager::class.java)
-                }
+                val clipboard = remember { context.getSystemService(ClipboardManager::class.java) }
                 LaunchedEffect(sessionState.handle, activeTabId) {
                     selection = null
                     selectionState = null
@@ -1023,7 +1041,8 @@ fun TerminalScreen(
 
                     fun dispatchAccessoryAction(action: AccessoryAction) {
                         if (
-                            action is AccessoryAction.SendText && ichuchuKeys.handleText(action.text)
+                            action is AccessoryAction.SendText &&
+                                ichuchuKeys.handleText(action.text)
                         ) {
                             return
                         }
@@ -1058,11 +1077,18 @@ fun TerminalScreen(
                         selectionState = null
                     }
 
+                    var uploadDestination by remember {
+                        mutableStateOf<TerminalViewModel.UploadDestination?>(null)
+                    }
                     val importFileLauncher =
                         rememberLauncherForActivityResult(
                             contract = ActivityResultContracts.GetMultipleContents()
                         ) { uris: List<Uri> ->
-                            if (uris.isEmpty()) return@rememberLauncherForActivityResult
+                            val destination = uploadDestination
+                            uploadDestination = null
+                            if (uris.isEmpty() || destination == null) {
+                                return@rememberLauncherForActivityResult
+                            }
                             scope.launch(Dispatchers.IO) {
                                 var success = 0
                                 var failed = 0
@@ -1095,27 +1121,30 @@ fun TerminalScreen(
                                                     0L
                                                 }
                                             } ?: 0L
+                                    var upload: TerminalViewModel.UploadTarget? = null
                                     try {
                                         val stream =
                                             context.contentResolver.openInputStream(uri)
                                                 ?: throw IllegalStateException("Cannot open file")
                                         stream.use { input ->
-                                            vm.beginUpload(fileName)
+                                            val target = vm.beginUpload(fileName, destination)
+                                            upload = target
                                             vm.setUploadProgress(
+                                                destination,
                                                 UploadProgress(
                                                     fileName = fileName,
                                                     bytesWritten = 0,
                                                     totalBytes = fileSize,
                                                     fileIndex = index,
                                                     totalFiles = total,
-                                                )
+                                                ),
                                             )
                                             val buffer = ByteArray(65536)
                                             var bytesWritten = 0L
                                             var lastProgressBytes = 0L
                                             var read: Int
                                             while (input.read(buffer).also { read = it } != -1) {
-                                                vm.writeUploadChunk(buffer.copyOf(read))
+                                                vm.writeUploadChunk(target, buffer.copyOf(read))
                                                 bytesWritten += read
                                                 if (
                                                     bytesWritten - lastProgressBytes >= 262144 ||
@@ -1123,25 +1152,26 @@ fun TerminalScreen(
                                                 ) {
                                                     lastProgressBytes = bytesWritten
                                                     vm.setUploadProgress(
+                                                        destination,
                                                         UploadProgress(
                                                             fileName = fileName,
                                                             bytesWritten = bytesWritten,
                                                             totalBytes = fileSize,
                                                             fileIndex = index,
                                                             totalFiles = total,
-                                                        )
+                                                        ),
                                                     )
                                                 }
                                             }
-                                            vm.finishUpload()
+                                            vm.finishUpload(target)
                                         }
                                         success++
                                     } catch (e: Exception) {
                                         failed++
                                         lastError = e.message ?: e.javaClass.simpleName
-                                        runCatching { vm.finishUpload() }
+                                        upload?.let { runCatching { vm.finishUpload(it) } }
                                     } finally {
-                                        vm.setUploadProgress(null)
+                                        vm.setUploadProgress(destination, null)
                                     }
                                 }
                                 withContext(Dispatchers.Main) {
@@ -1160,7 +1190,9 @@ fun TerminalScreen(
                     var pendingDownloadBytes by remember { mutableStateOf<ByteArray?>(null) }
                     var pendingDownloadName by remember { mutableStateOf("download.bin") }
                     var pendingDeleteEntry by remember {
-                        mutableStateOf<io.github.kontsevoye.ichuchu.ui.screens.Files.FileBrowserEntry?>(
+                        mutableStateOf<
+                            io.github.kontsevoye.ichuchu.ui.screens.Files.FileBrowserEntry?
+                        >(
                             null
                         )
                     }
@@ -1224,13 +1256,9 @@ fun TerminalScreen(
                             TerminalTabStrip(
                                 tabs = tabs,
                                 activeTabId = activeTabId,
-                                onTabSelected = { id ->
-                                    vm.selectTab(id)
-                                },
+                                onTabSelected = { id -> vm.selectTab(id) },
                                 onAddTab = { showNewTabPicker = true },
-                                onOpenManager = {
-                                    showGlobalTabManager = true
-                                },
+                                onOpenManager = { showGlobalTabManager = true },
                                 newTabPicker = newTabPicker,
                             )
                         }
@@ -1281,14 +1309,18 @@ fun TerminalScreen(
                                     Toast.makeText(context, "Copied path", Toast.LENGTH_SHORT)
                                         .show()
                                 },
-                                onImportFile = { importFileLauncher.launch("*/*") },
+                                onImportFile = {
+                                    uploadDestination = vm.uploadDestination()
+                                    if (uploadDestination != null) importFileLauncher.launch("*/*")
+                                },
                                 onOpenFile = { entry ->
                                     val tabId = activeTabId ?: return@FileBrowserScreen
                                     scope.launch(Dispatchers.IO) {
                                         runCatching {
-                                                val outFile = stageRemoteFile(context.cacheDir, entry.name) {
-                                                    vm.readFile(tabId, entry, 32 * 1024 * 1024)
-                                                }
+                                                val outFile =
+                                                    stageRemoteFile(context.cacheDir, entry.name) {
+                                                        vm.readFile(tabId, entry, 32 * 1024 * 1024)
+                                                    }
                                                 val uri =
                                                     FileProvider.getUriForFile(
                                                         context,
@@ -1296,7 +1328,9 @@ fun TerminalScreen(
                                                         outFile,
                                                     )
                                                 val ext =
-                                                    entry.name.substringAfterLast('.', "").lowercase()
+                                                    entry.name
+                                                        .substringAfterLast('.', "")
+                                                        .lowercase()
                                                 val mime =
                                                     MimeTypeMap.getSingleton()
                                                         .getMimeTypeFromExtension(ext)
@@ -1361,10 +1395,12 @@ fun TerminalScreen(
                                     confirmLabel = "Delete",
                                     dismissLabel = "Cancel",
                                     onConfirm = {
-                                        val tabId = activeTabId ?: run {
-                                            pendingDeleteEntry = null
-                                            return@IchuDialog
-                                        }
+                                        val tabId =
+                                            activeTabId
+                                                ?: run {
+                                                    pendingDeleteEntry = null
+                                                    return@IchuDialog
+                                                }
                                         pendingDeleteEntry = null
                                         scope.launch(Dispatchers.IO) {
                                             runCatching { vm.deleteFile(tabId, entry) }
@@ -1452,7 +1488,8 @@ fun TerminalScreen(
                                 val selState = selectionState
                                 if (selState != null) {
                                     val sel = selection
-                                    val isAnchorStart = sel != null && sel.anchorIndex <= sel.focusIndex
+                                    val isAnchorStart =
+                                        sel != null && sel.anchorIndex <= sel.focusIndex
                                     TerminalSelectionHandle(
                                         tipX = selState.startOffset.x,
                                         tipY = selState.startOffset.y + selState.cellHeightPx / 2f,
@@ -1502,12 +1539,16 @@ fun TerminalScreen(
                                     val centerX = (selLeft + selRight) / 2f
                                     val menuWidth = menuSize.width.coerceAtLeast(1)
                                     val menuHeight = menuSize.height.coerceAtLeast(1)
-                                    val maxMenuX = (selState.canvasWidthPx - menuWidth).coerceAtLeast(0)
-                                    val menuX = (centerX - menuWidth / 2f).toInt().coerceIn(0, maxMenuX)
+                                    val maxMenuX =
+                                        (selState.canvasWidthPx - menuWidth).coerceAtLeast(0)
+                                    val menuX =
+                                        (centerX - menuWidth / 2f).toInt().coerceIn(0, maxMenuX)
                                     val aboveY = (selTop - menuHeight - menuGapPx).toInt()
                                     val belowY = (selBottom + menuGapPx).toInt()
-                                    val maxMenuY = (selState.canvasHeightPx - menuHeight).coerceAtLeast(0)
-                                    val menuY = if (aboveY >= 0) aboveY else belowY.coerceIn(0, maxMenuY)
+                                    val maxMenuY =
+                                        (selState.canvasHeightPx - menuHeight).coerceAtLeast(0)
+                                    val menuY =
+                                        if (aboveY >= 0) aboveY else belowY.coerceIn(0, maxMenuY)
                                     Row(
                                         modifier =
                                             Modifier.offset { IntOffset(menuX, menuY) }
@@ -1709,8 +1750,13 @@ fun TerminalScreen(
                                             .also { view -> inputViewRef.value = view }
                                     },
                                     onRelease = { view ->
-                                        // The session can remove this editor before route navigation runs.
-                                        dismissTerminalKeyboard(keepAwakeView, terminalKeyboard, view)
+                                        // The session can remove this editor before route
+                                        // navigation runs.
+                                        dismissTerminalKeyboard(
+                                            keepAwakeView,
+                                            terminalKeyboard,
+                                            view,
+                                        )
                                     },
                                     update = { view ->
                                         if (inputViewRef.value == null) {
@@ -1720,8 +1766,9 @@ fun TerminalScreen(
                                     },
                                 )
 
-                                if (currentTerminalCustomKeyGroups.isNotEmpty() &&
-                                    (showCustomActionsFab || fabFilteredActions != null)
+                                if (
+                                    currentTerminalCustomKeyGroups.isNotEmpty() &&
+                                        (showCustomActionsFab || fabFilteredActions != null)
                                 ) {
                                     TerminalCustomActionsFab(
                                         groups = currentTerminalCustomKeyGroups,
@@ -2016,12 +2063,8 @@ fun TerminalScreen(
                 vm.selectTab(id)
                 showGlobalTabManager = false
             },
-            onCloseTab = { id ->
-                vm.closeTab(id)
-            },
-            onDuplicateTab = { id ->
-                vm.duplicateTab(id)
-            },
+            onCloseTab = { id -> vm.closeTab(id) },
+            onDuplicateTab = { id -> vm.duplicateTab(id) },
             onAddTab = openAnotherSessionForCurrentHost,
             onDismiss = { showGlobalTabManager = false },
             multiplexerEnabled = activeTab?.spec?.usesRuntimeMultiplexer == true,

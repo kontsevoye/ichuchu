@@ -118,6 +118,28 @@ fixture flag the network tests are skipped. Stop the fixture after testing.
 This fixture proves nested client transport behavior, not real sshd policy or
 physical-device network roaming.
 
+`FileBrowserIntegrationTest` uses the same fixture to exercise the file-browser
+ViewModel through real JNI/SFTP: tab characters in filenames, empty files, and
+switching active terminal tabs during an upload. Uploaded files stay in memory.
+
+## Screen and edge-case QA
+
+Use the [application checklist](../../docs/qa-checklist.md) to record coverage and
+unavailable device cases. With the SSH jump fixture running, the additional
+synthetic regression and screen checks run on the disposable emulator with:
+
+```sh
+adb -s <test-emulator> shell am instrument -w \
+  -e class io.github.kontsevoye.ichuchu.QaRegressionTest,io.github.kontsevoye.ichuchu.QaScreenCoverageTest,io.github.kontsevoye.ichuchu.FileBrowserIntegrationTest \
+  -e qaFixture true -e sshJumpFixture true \
+  io.github.kontsevoye.ichuchu.test/androidx.test.runner.AndroidJUnitRunner
+```
+
+These tests cover duplicate saves, connection-test invalidation/validation,
+key-container import, switch accessibility, large-font settings, file actions,
+settings/key dialogs and app-lock gating. They create and remove only synthetic
+profiles/keys. `qa-*.png` screenshots are written to the test app's private cache.
+
 ## Native Agent Deck workspace
 
 `agent_deck_server.py` accepts only `deck-fixture` with synthetic `none`

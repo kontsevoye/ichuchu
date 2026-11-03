@@ -46,3 +46,9 @@ and select `main` (or the intended source branch). The `workflow_dispatch` trigg
 is independent of the path filter. A new deployment supersedes an older running
 deployment. Installation uses the frozen pnpm lockfile and a cached pnpm store
 inside the lightweight `frontend` Nix shell.
+
+## Application QA
+
+Use the [screen and edge-case checklist](qa-checklist.md) with the documented
+[disposable Android fixtures](../android/test-fixtures/README.md). Keep each run's
+results, screenshots and logs in the ignored local `.plans/` directory.

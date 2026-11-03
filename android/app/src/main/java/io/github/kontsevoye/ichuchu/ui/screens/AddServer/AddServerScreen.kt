@@ -54,6 +54,7 @@ import io.github.kontsevoye.ichuchu.ui.theme.IchuTypography
 @Composable
 fun AddServerScreen(vm: AddServerViewModel, onBack: () -> Unit, modifier: Modifier = Modifier) {
     val form by vm.form.collectAsStateWithLifecycle()
+    val isSaving by vm.isSaving.collectAsStateWithLifecycle()
     val testState by vm.testState.collectAsStateWithLifecycle()
     val keys by vm.keys.collectAsStateWithLifecycle()
     val hosts by vm.hosts.collectAsStateWithLifecycle()
@@ -394,6 +395,7 @@ fun AddServerScreen(vm: AddServerViewModel, onBack: () -> Unit, modifier: Modifi
                 ) {
                     IchuSwitch(
                         checked = form.authMethod == AuthMethod.KeyWithPassphrase,
+                        label = "Set passphrase",
                         onCheckedChange = { checked ->
                             if (checked) {
                                 vm.updateAuthMethod(AuthMethod.KeyWithPassphrase)
@@ -443,9 +445,14 @@ fun AddServerScreen(vm: AddServerViewModel, onBack: () -> Unit, modifier: Modifi
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
             ) {
-                IchuText("require biometric auth", style = typography.label)
+                IchuText(
+                    "require biometric auth",
+                    style = typography.label,
+                    modifier = Modifier.weight(1f),
+                )
                 IchuSwitch(
                     checked = form.requireAuthOnConnect,
+                    label = "Require biometric authentication",
                     onCheckedChange = vm::updateRequireAuthOnConnect,
                 )
             }
@@ -465,7 +472,7 @@ fun AddServerScreen(vm: AddServerViewModel, onBack: () -> Unit, modifier: Modifi
             SectionDivider()
         }
 
-        val canTest = form.host.isNotBlank() && form.username.isNotBlank()
+        val canTest = form.canTest()
         IchuButton(
             onClick = {
                 if (vm.requiresTestVerification) {
@@ -505,7 +512,7 @@ fun AddServerScreen(vm: AddServerViewModel, onBack: () -> Unit, modifier: Modifi
         }
         IchuButton(
             onClick = { vm.save(onBack) },
-            enabled = form.canSave(),
+            enabled = form.canSave() && !isSaving,
             variant = IchuButtonVariant.Outlined,
             bracketed = true,
             borderColor = colors.accent,

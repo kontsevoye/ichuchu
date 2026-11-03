@@ -166,9 +166,9 @@ class UpdateAcceptanceActivity : FragmentActivity() {
         val sessions = TerminalSessionRepository.getInstance(application)
         val spec =
             TabSpec(
-                null,
-                "acceptance shell",
-                "localhost",
+                hostId = null,
+                displayName = "acceptance shell",
+                host = "localhost",
                 username = "android",
                 authMethod = AuthMethod.None,
                 transport = Transport.LocalShell,

@@ -49,7 +49,18 @@ class MemoryHandle(paramiko.SFTPHandle):
 class MemorySftp(paramiko.SFTPServerInterface):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.files = {}
+        self.files = {"/tab\tname.txt": b"tabbed", "/empty.txt": b""}
+
+    def list_folder(self, path):
+        entries = []
+        for name, data in self.files.items():
+            item = paramiko.SFTPAttributes()
+            item.filename = name.rsplit("/", 1)[-1]
+            item.st_size = len(data)
+            item.st_mode = stat.S_IFREG | 0o600
+            item.st_mtime = 1700000000
+            entries.append(item)
+        return entries
 
     def open(self, path, flags, attr):
         if flags & os.O_CREAT:

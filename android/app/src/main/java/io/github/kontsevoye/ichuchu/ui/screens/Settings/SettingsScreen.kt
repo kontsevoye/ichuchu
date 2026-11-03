@@ -286,8 +286,12 @@ private fun GeneralSettings(
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        IchuText("lock app on open", style = typography.label)
-        IchuSwitch(checked = appLockEnabled, onCheckedChange = onAppLockEnabledChanged)
+        IchuText("lock app on open", style = typography.label, modifier = Modifier.weight(1f))
+        IchuSwitch(
+            label = "Lock app on open",
+            checked = appLockEnabled,
+            onCheckedChange = onAppLockEnabledChanged,
+        )
     }
     Spacer(modifier = Modifier.height(20.dp))
     Row(
@@ -295,8 +299,16 @@ private fun GeneralSettings(
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        IchuText("verify before server connect", style = typography.label)
-        IchuSwitch(checked = requireAuthOnConnect, onCheckedChange = onRequireAuthOnConnectChanged)
+        IchuText(
+            "verify before server connect",
+            style = typography.label,
+            modifier = Modifier.weight(1f),
+        )
+        IchuSwitch(
+            label = "Verify before server connect",
+            checked = requireAuthOnConnect,
+            onCheckedChange = onRequireAuthOnConnectChanged,
+        )
     }
     Spacer(modifier = Modifier.height(4.dp))
     IchuText(
@@ -310,7 +322,11 @@ private fun GeneralSettings(
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        IchuText("ssh hosts & keys backup", style = typography.label)
+        IchuText(
+            "ssh hosts & keys backup",
+            style = typography.label,
+            modifier = Modifier.weight(1f),
+        )
         IchuButton(
             onClick = onOpenBackup,
             variant = IchuButtonVariant.Outlined,

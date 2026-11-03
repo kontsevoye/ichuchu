@@ -23,20 +23,22 @@ object IchuchuBackupImportPlanner {
         payload.keys.forEach { backupKey ->
             val exactExisting = existingKeys.firstOrNull { it.sameContentAs(backupKey) }
             if (exactExisting != null) {
-                keyActions += KeyImportAction.Reuse(
-                    exportedId = backupKey.id,
-                    localId = exactExisting.id,
-                    name = exactExisting.name,
-                )
+                keyActions +=
+                    KeyImportAction.Reuse(
+                        exportedId = backupKey.id,
+                        localId = exactExisting.id,
+                        name = exactExisting.name,
+                    )
                 keyRefs[backupKey.id] = KeyReference.Existing(exactExisting.id)
             } else {
                 val importName = uniqueName(backupKey.name, usedKeyNames)
                 val importKey = backupKey.toEntity(idOverride = 0L).copy(name = importName)
-                keyActions += KeyImportAction.Insert(
-                    exportedId = backupKey.id,
-                    key = importKey,
-                    renamed = importName != backupKey.name,
-                )
+                keyActions +=
+                    KeyImportAction.Insert(
+                        exportedId = backupKey.id,
+                        key = importKey,
+                        renamed = importName != backupKey.name,
+                    )
                 keyRefs[backupKey.id] = KeyReference.Insert(keyActions.lastIndex)
             }
         }
@@ -78,8 +80,11 @@ object IchuchuBackupImportPlanner {
             if (key.id <= 0L) throw BackupFormatException("Invalid SSH key id")
             if (!keyIds.add(key.id)) throw BackupFormatException("Duplicate SSH key id")
             if (key.name.isBlank()) throw BackupFormatException("SSH key name is required")
-            if (key.privateKeyPem.isBlank()) throw BackupFormatException("SSH private key is required")
-            if (key.publicKeyOpenSsh.isBlank()) throw BackupFormatException("SSH public key is required")
+            if (key.privateKeyPem.isBlank()) {
+                throw BackupFormatException("SSH private key is required")
+            }
+            // PEM imports may not have a derived OpenSSH public key. Preserve those
+            // supported keys through backup; authentication uses their private material.
         }
 
         try {
@@ -133,10 +138,17 @@ data class BackupImportPlan(
     val keyActions: List<KeyImportAction>,
     val hostActions: List<HostImportAction>,
 ) {
-    val keyInsertCount: Int get() = keyActions.count { it is KeyImportAction.Insert }
-    val keyReuseCount: Int get() = keyActions.count { it is KeyImportAction.Reuse }
-    val renamedKeyCount: Int get() = keyActions.count { it is KeyImportAction.Insert && it.renamed }
-    val renamedHostCount: Int get() = hostActions.count { it.renamed }
+    val keyInsertCount: Int
+        get() = keyActions.count { it is KeyImportAction.Insert }
+
+    val keyReuseCount: Int
+        get() = keyActions.count { it is KeyImportAction.Reuse }
+
+    val renamedKeyCount: Int
+        get() = keyActions.count { it is KeyImportAction.Insert && it.renamed }
+
+    val renamedHostCount: Int
+        get() = hostActions.count { it.renamed }
 }
 
 sealed interface KeyImportAction {

@@ -17,6 +17,16 @@ import org.junit.Test
 
 class IchuchuBackupCoreTest {
     @Test
+    fun importedPemWithoutDerivedPublicKeySurvivesBackupPlanning() {
+        val key = sampleKey().copy(algorithm = "imported", publicKeyOpenSsh = "")
+        val payload =
+            BackupPayload(keys = listOf(BackupSshKey.fromEntity(key)), hosts = emptyList())
+        val decoded = IchuchuBackupCodec.decodePayload(IchuchuBackupCodec.encodePayload(payload))
+        val plan = IchuchuBackupImportPlanner.planImport(decoded, emptyList(), emptyList())
+        assertEquals(key.copy(id = 0), (plan.keyActions.single() as KeyImportAction.Insert).key)
+    }
+
+    @Test
     fun encryptedBackupRoundTripPreservesAllCurrentFields() {
         assumeNativeBackupAvailable()
         val payload = samplePayload()

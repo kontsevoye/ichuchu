@@ -79,10 +79,22 @@ class Device:
             time.sleep(.5)
         raise RuntimeError("Timed out waiting for isolated device state")
     def xml(self):
-        self.adb("shell", "uiautomator", "dump", "/sdcard/ichuchu-updater-ui.xml")
-        data = self.adb("shell", "cat", "/sdcard/ichuchu-updater-ui.xml")
-        (EVIDENCE / "current-ui.xml").write_bytes(data)
-        return ET.fromstring(data)
+        # uiautomator can exit zero without writing a hierarchy during transitions.
+        # Remove the old snapshot so a retry cannot click stale coordinates.
+        for attempt in range(4):
+            self.adb("shell", "rm", "-f", "/sdcard/ichuchu-updater-ui.xml")
+            output = self.adb("shell", "uiautomator", "dump", "/sdcard/ichuchu-updater-ui.xml")
+            (EVIDENCE / "uiautomator.log").write_bytes(output)
+            try:
+                data = self.adb("shell", "cat", "/sdcard/ichuchu-updater-ui.xml")
+                tree = ET.fromstring(data)
+                (EVIDENCE / "current-ui.xml").write_bytes(data)
+                return tree
+            except (subprocess.CalledProcessError, ET.ParseError):
+                if attempt == 3:
+                    (EVIDENCE / "failed-ui.png").write_bytes(self.adb("exec-out", "screencap", "-p"))
+                    raise
+                time.sleep(.5)
     def click(self, text, scroll=False):
         for _ in range(10 if scroll else 1):
             for node in self.xml().iter("node"):

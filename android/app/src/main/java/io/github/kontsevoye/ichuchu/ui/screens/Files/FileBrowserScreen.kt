@@ -75,8 +75,11 @@ fun FileBrowserScreen(
 
     val filteredEntries =
         remember(state.entries, searchQuery) {
-            if (searchQuery.isBlank()) state.entries
-            else state.entries.filter { it.name.contains(searchQuery, ignoreCase = true) }
+            if (searchQuery.isBlank()) {
+                state.entries
+            } else {
+                state.entries.filter { it.name.contains(searchQuery, ignoreCase = true) }
+            }
         }
 
     Column(modifier = modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 8.dp)) {
@@ -87,6 +90,7 @@ fun FileBrowserScreen(
         ) {
             IchuButton(
                 onClick = onBackToTerminal,
+                contentDescription = "Back to terminal",
                 variant = IchuButtonVariant.Ghost,
                 bracketed = false,
                 contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
@@ -105,6 +109,7 @@ fun FileBrowserScreen(
             )
             IchuButton(
                 onClick = onRefresh,
+                contentDescription = "Refresh files",
                 variant = IchuButtonVariant.Ghost,
                 bracketed = false,
                 contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
@@ -151,8 +156,11 @@ fun FileBrowserScreen(
                                                     },
                                                     onLongClick = {
                                                         optionsEntryPath =
-                                                            if (optionsEntryPath == entry.path) null
-                                                            else entry.path
+                                                            if (optionsEntryPath == entry.path) {
+                                                                null
+                                                            } else {
+                                                                entry.path
+                                                            }
                                                     },
                                                 )
                                                 .padding(horizontal = 8.dp, vertical = 6.dp),
@@ -181,6 +189,7 @@ fun FileBrowserScreen(
                                         }
                                         IchuButton(
                                             onClick = { onCopyPath(entry.path) },
+                                            contentDescription = "Copy path: ${entry.path}",
                                             variant = IchuButtonVariant.Ghost,
                                             bracketed = false,
                                             contentPadding =
@@ -287,6 +296,7 @@ fun FileBrowserScreen(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 IchuButton(
+                    contentDescription = "Parent directory or terminal",
                     onClick = {
                         if (
                             state.currentPath == "/" || state.currentPath == state.resolvedHomePath
@@ -306,6 +316,7 @@ fun FileBrowserScreen(
                 Box {
                     IchuButton(
                         onClick = { showSortDropdown = true },
+                        contentDescription = "Sort files",
                         variant = IchuButtonVariant.Ghost,
                         bracketed = true,
                         contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
@@ -332,8 +343,11 @@ fun FileBrowserScreen(
                                             showSortDropdown = false
                                         },
                                         variant =
-                                            if (isSelected) IchuButtonVariant.Filled
-                                            else IchuButtonVariant.Ghost,
+                                            if (isSelected) {
+                                                IchuButtonVariant.Filled
+                                            } else {
+                                                IchuButtonVariant.Ghost
+                                            },
                                         bracketed = true,
                                         contentPadding =
                                             PaddingValues(horizontal = 10.dp, vertical = 6.dp),
@@ -342,8 +356,11 @@ fun FileBrowserScreen(
                                             sort.name.lowercase(),
                                             style = typography.label,
                                             color =
-                                                if (isSelected) colors.onAccent
-                                                else colors.textMuted,
+                                                if (isSelected) {
+                                                    colors.onAccent
+                                                } else {
+                                                    colors.textMuted
+                                                },
                                         )
                                     }
                                 }
@@ -354,6 +371,7 @@ fun FileBrowserScreen(
 
                 IchuButton(
                     onClick = onImportFile,
+                    contentDescription = "Upload files",
                     variant = IchuButtonVariant.Ghost,
                     bracketed = true,
                     contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
