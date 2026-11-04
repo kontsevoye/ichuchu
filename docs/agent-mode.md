@@ -23,8 +23,14 @@ Ordinary prompts use native chat. Permissions, trust/login screens, interactive
 questions and account menus use **⋯ → Open terminal** in the chat header.
 The app invokes `agent-deck -p PROFILE session attach FULL_ID`: Deck resolves the
 session's saved tmux socket. It does not create an outer tmux session or guess a
-socket/session name. There are no native Approve/Allow buttons or a misleading
-Stop button that kills the entire agent process.
+socket/session name. Permissions and interactive answers remain in that terminal.
+
+Long-press a session card to **restart**, **stop** or **delete** that exact session.
+Each action asks for confirmation. Stop ends the agent process and keeps the
+session in the list; restart starts it again using its saved conversation binding.
+Delete stops the process and removes the Deck entry, while retaining project files
+and native conversation history. These actions require a live connection to the
+owning host and never prune a worktree. Cancelling the action changes nothing.
 
 **⋯ → Model & reasoning** changes an idle conversation's model without adding a
 toolbar row or shrinking the composer. Codex supports model-only, reasoning-only
@@ -36,20 +42,27 @@ stay literal; the stored transcript is unchanged.
 
 In-session Codex controls currently support **Codex 0.166.x**, Python 3 and the
 standard Codex model/context footer on the `agent-deck` tmux socket. The controller
-checks the exact session identity and pane, shares Deck 1.16.36's send lock, and
-refuses active turns, queued deliveries, terminal drafts and open menus. It sends
+checks the exact session identity and pane and shares Deck 1.16.36's send lock.
+Model changes refuse active turns, queued deliveries, terminal drafts and open menus. It sends
 one session-only `/model` command and requires both Codex's acknowledgement and
 the updated footer; it never retries a control automatically. Models and supported
 reasoning levels come from that session's Codex model cache, rather than Deck's
 older launch catalog. General Codex defaults are unchanged. Other versions,
 custom footers/sockets and unsupported states retain **Open terminal**.
-Ultra is excluded from the in-app choices: Deck 1.16.36 does not recognize its
-`»` composer for guarded message delivery. Use the terminal for Ultra; the app
-can read that mode and switch back to a supported reasoning level.
+Ultra remains terminal-only pending live acceptance of its input semantics. The
+app can read that mode and switch back to a supported reasoning level.
 
 Claude model changes use Deck's guarded `session command /model` operation.
 Claude reasoning still uses its terminal. When an SSH result is lost, inspect the
 terminal and read the current settings before applying again.
+
+For Codex, **N% left** appears to the right of **> Message**. With a compact
+composer it moves into the existing space between attachment and Send buttons,
+without adding a row. The app reads Codex's own footer or the latest native token
+usage for the exact conversation, using Codex's context formula. It does not
+confuse cumulative token usage or Deck's startup-context estimate with remaining
+context. Unknown, disconnected and unsupported values are hidden; zero is shown.
+The value refreshes while the chat is open and may rise after native compaction.
 
 The session list and chat always use SSH commands without a PTY. Choosing Mosh
 for the server applies to the optional terminal, including its existing UDP
@@ -152,22 +165,23 @@ imports are reconciled against the owning session even when you switch chats
 while a request is in flight. Older cached duplicate receipts are repaired on
 read, retaining drafts, attachments and send positions.
 
-Prompts travel in SSH stdin using `--message-file - --queue
---require-input-prompt --no-tag`. They are not interpolated into shell code.
-Sending is disabled when the server lacks the guarded-send capability. Deck can
-queue messages while an agent is busy, and the chat displays delivery receipts.
-Only a landed transcript row ID merges a local message with remote history.
-Identical prompt text is not a deduplication key.
+Prompt text travels only through SSH stdin, never as shell source. Claude uses
+Deck's durable `--message-file - --queue --require-input-prompt --no-tag` delivery.
+On the tested Codex 0.166.x / Deck 1.16.36 host, new and existing Codex sessions
+instead receive one bracketed paste and one native Enter under Deck's send lock.
+An ordinary busy turn can accept a follow-up immediately through Codex's native
+input handling. It no longer waits in Deck's separate queue, whose busy retry
+budget can expire after 30 minutes without a typing attempt.
 
-A Codex session without a native conversation ID uses Deck's guarded composer
-fallback when the host advertises it. Deck's queue worker does not forward this
-option, so this send runs directly with `--no-wait --require-input-prompt`.
-Deck 1.16.36 can classify the Codex 0.166 welcome logo as a busy spinner; waiting
-on that status prevents the first message indefinitely. The input-prompt guard
-still refuses a live turn or menu under Deck's send lock before typing. An explicit `submitted` confirmation is shown as **submitted to agent**;
-it does not invent a transcript row or bind history by project directory.
-Busy or interactive sessions are not interrupted. Established Codex sessions
-and Claude continue to use the durable queue.
+The controller checks the exact session, live pane and empty composer before
+typing, then verifies the pasted input. Existing drafts, menus, unknown composer
+states and older pending Deck queue entries refuse delivery. Native slash/shell
+commands belong in the terminal. The app never clears an existing draft, sends
+Ctrl+C, repeats Enter or retries delivery automatically. An explicit native
+acceptance is shown as **submitted to Codex**. Only a fresh, uniquely matched
+canonical user-row ID completes reconciliation with history; older rows and
+identical text alone cannot confirm delivery. The app does not bind a conversation
+by project directory. Unsupported host versions retain the terminal fallback.
 
 A session marked **waiting to start** is queued behind its Deck group's
 concurrent-session limit, independently of model or reasoning settings. The

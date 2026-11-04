@@ -97,9 +97,10 @@ data class DeckSession(val raw: JsonObject) {
     val status: AgentStatus
         get() =
             when {
+                // Deck persists intentional stops but labels them cached once tmux is gone.
+                raw.text("status") == "stopped" -> AgentStatus.Stopped
                 raw.text("status_source") == "cached" -> AgentStatus.Unknown
-                substate == "process-exited" || raw.text("status") in setOf("stopped", "dead") ->
-                    AgentStatus.Stopped
+                substate == "process-exited" || raw.text("status") == "dead" -> AgentStatus.Stopped
                 raw.text("status") == "starting" -> AgentStatus.Starting
                 raw.text("status") == "queued" -> AgentStatus.Queued
                 needsTerminal || substate in setOf("usage-limit", "model-limit") ->
@@ -337,6 +338,8 @@ data class DeckSend(
             when {
                 uncertain -> "delivery unconfirmed"
                 state == "landed" -> "received by agent"
+                state == "submitted" && receipt.text("delivery") == "codex_native" ->
+                    "submitted to Codex"
                 state == "submitted" && final -> "submitted to agent"
                 state == "failed" -> "not delivered"
                 state == "cancelled" -> "cancelled"

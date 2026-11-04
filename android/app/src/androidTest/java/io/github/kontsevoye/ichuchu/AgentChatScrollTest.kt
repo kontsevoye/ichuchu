@@ -91,6 +91,48 @@ ${location.replace('–', '-')}|note=[prior identity recovery and fixture covera
         capture("chat-memory-collapsed")
     }
 
+    @Test
+    fun contextPercentageUsesExistingSpaceWithAndWithoutKeyboard() {
+        show()
+        atEnd()
+        fun historyBounds() =
+            compose.onNodeWithTag("agent_chat_history").fetchSemanticsNode().boundsInRoot
+        val before = historyBounds()
+        compose.runOnIdle { ui = ui.copy(contextRemaining = 73) }
+        compose.onNodeWithContentDescription("Context remaining: 73 percent").assertIsDisplayed()
+        assertEquals(before, historyBounds())
+        capture("context-header")
+        openKeyboard()
+        settledViewport()
+        val withKeyboard = historyBounds()
+        val input =
+            compose.onAllNodes(hasSetTextAction()).onLast().fetchSemanticsNode().boundsInRoot
+        compose.runOnIdle { ui = ui.copy(contextRemaining = 0) }
+        compose.onNodeWithContentDescription("Context remaining: 0 percent").assertIsDisplayed()
+        assertEquals(withKeyboard, historyBounds())
+        assertEquals(
+            input,
+            compose.onAllNodes(hasSetTextAction()).onLast().fetchSemanticsNode().boundsInRoot,
+        )
+        capture("context-ime")
+        compose.runOnIdle { ui = ui.copy(contextRemaining = 100) }
+        compose.onNodeWithContentDescription("Context remaining: 100 percent").assertIsDisplayed()
+        assertEquals(withKeyboard, historyBounds())
+        capture("context-ime-full")
+        // The temporary longer sending label retains its space even at 320dp/200%.
+        compose.runOnIdle { ui = ui.copy(sending = true) }
+        compose.onNodeWithTag("agent_context_remaining").assertDoesNotExist()
+        compose.onNodeWithText("sending…").assertIsDisplayed()
+        assertEquals(withKeyboard, historyBounds())
+        assertEquals(
+            input,
+            compose.onAllNodes(hasSetTextAction()).onLast().fetchSemanticsNode().boundsInRoot,
+        )
+        compose.runOnIdle { ui = ui.copy(contextRemaining = null) }
+        compose.onNodeWithTag("agent_context_remaining").assertDoesNotExist()
+        assertEquals(withKeyboard, historyBounds())
+    }
+
     private fun row(id: Int, body: String = "Message $id. " + "Synthetic chat text. ".repeat(6)) =
         DeckRow(
             buildJsonObject {

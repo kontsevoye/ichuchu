@@ -137,5 +137,104 @@ class GuardTest(unittest.TestCase):
                 pass
 
 
+class NativeInputTest(unittest.TestCase):
+    def test_busy_composer_accepts_input_without_waiting_for_turn_end(self):
+        busy = FRAME.replace('Answer', 'Working (2s • esc to interrupt)')
+        self.assertIn('Context 96% left', control.input_frame(busy))
+        with self.assertRaises(control.Refused):
+            control.ready_frame(busy)
+
+    def test_native_input_refuses_existing_draft_and_menus(self):
+        for frame in [FRAME.replace('Ask Codex to do anything', 'unsent draft'),
+                      FRAME.replace('\x1b[2m', ''), FRAME + '\nChoose permission\nEnter to confirm',
+                      FRAME.replace('GPT-6.1-Sol high', 'Future unknown footer')]:
+            with self.assertRaises(control.Refused):
+                control.input_frame(frame)
+
+    def test_paste_requires_exact_content_or_owned_large_paste_length(self):
+        text = 'line one\nline two 世界'
+        control.input_frame(FRAME.replace('Ask Codex to do anything', 'line one\n  line two 世界'), text)
+        long_text = '世界' * 700
+        control.input_frame(FRAME.replace('Ask Codex to do anything', '[Pasted Content 1400 chars]'), long_text)
+        for body in ['line one changed', '[Pasted Content 1399 chars]']:
+            with self.assertRaises(control.Refused):
+                control.input_frame(FRAME.replace('Ask Codex to do anything', body), long_text)
+
+    def test_narrow_soft_wrapped_url_and_osc_hyperlink_are_verified(self):
+        text = 'Use literal https://qa.invalid/abcdefgh then reply OK'
+        link = '\x1b]8;;https://qa.invalid/abcdefgh\x1b\\'
+        end = '\x1b]8;;\x1b\\'
+        body = 'Use literal ' + link + 'https://qa.invalid/abc' + end + '\n  ' + link + 'defgh' + end + '\n  then reply OK'
+        frame = FRAME.replace('Ask Codex to do anything', body)
+        control.input_frame(frame, text)
+        with self.assertRaises(control.Refused):
+            control.input_frame(frame.replace('defgh', 'deXgh'), text)
+
+    def test_context_uses_last_usage_not_cumulative_totals_and_validates_identity(self):
+        self.assertEqual(96, control.context_percent({}, FRAME))
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'rollout.jsonl'
+            records = [dict(type='session_meta', payload=dict(id='native')),
+                       dict(type='event_msg', payload=dict(type='token_count', info=dict(
+                           model_context_window=112000, last_token_usage=dict(total_tokens=37000),
+                           total_token_usage=dict(total_tokens=9999999))))]
+            path.write_text('\n'.join(map(json.dumps, records)))
+            session = dict(codex_session_id='native', transcript_path=str(path))
+            self.assertEqual(75, control.context_percent(session, 'truncated footer'))
+            self.assertIsNone(control.context_percent(dict(session, codex_session_id='other'), ''))
+            records[-1]['payload']['info'] = None
+            path.write_text('\n'.join(map(json.dumps, records)))
+            self.assertIsNone(control.context_percent(session, ''))
+
+    def test_receipt_matches_only_a_new_unique_native_id_and_never_replays(self):
+        session = dict(id='qa', codex_session_id='native')
+        receipt = dict(success=True, state='submitted', native_pid='123', native_thread='native',
+                       native_baseline=['old'], native_digest=control.message_digest('repeat'), native_not_before=1000)
+        old = dict(id='old', kind='user', body='repeat', ts='1970-01-01T00:15:00Z')
+        new = dict(id='new', kind='user', body='repeat', ts='1970-01-01T00:17:00Z')
+        with patch.object(control, 'native_rows', return_value=[old]) as rows:
+            self.assertEqual('submitted', control.native_receipt(session, [], '123', receipt)['state'])
+            self.assertEqual('unknown', control.native_receipt(session, [], 'changed', receipt)['state'])
+            self.assertEqual(1, rows.call_count)
+        with patch.object(control, 'native_rows', return_value=[old, new]):
+            resolved = control.native_receipt(session, [], '123', receipt)
+            self.assertEqual(('landed', 'new'), (resolved['state'], resolved['landed_row_id']))
+        with patch.object(control, 'native_rows', return_value=[new, dict(new, id='newer')]):
+            self.assertEqual('unknown', control.native_receipt(session, [], '123', receipt)['state'])
+        with patch.object(control, 'native_rows', return_value=[dict(old, id='late-indexed-old-row')]):
+            self.assertEqual('submitted', control.native_receipt(session, [], '123', receipt)['state'])
+        for invalid in [dict(receipt, native_not_before=None), dict(receipt, native_baseline=None)]:
+            self.assertEqual('unknown', control.native_receipt(session, [], '123', invalid)['state'])
+
+    def test_native_paste_and_enter_happen_once_and_pending_receipt_can_be_serialized(self):
+        message = "don't execute $(touch sentinel) 世界"
+        busy = FRAME.replace('Answer', 'Working (2s • esc to interrupt)')
+        typed = busy.replace('Ask Codex to do anything', message)
+        captures = iter([busy, busy, typed, busy])
+        commands = []
+        def run(args, timeout=8):
+            commands.append(args)
+            return '{"queue": []}' if 'queue' in args else ''
+        with patch.object(control, 'run', side_effect=run), patch.object(control, 'native_rows', return_value=[]), \
+                patch.object(control.subprocess, 'run') as process, patch.object(control.time, 'sleep'):
+            result = control.native_send(dict(id='qa', codex_session_id='native'), [], ['tmux'], '%1', '123', lambda: next(captures), message)
+        self.assertEqual('submitted', result['state'])
+        self.assertTrue(result['submitted'])
+        self.assertEqual(1, sum('paste-buffer' in args for args in commands))
+        self.assertEqual(1, sum(args[-1] == 'Enter' for args in commands))
+        self.assertFalse(any(message in arg for args in commands for arg in args))
+        self.assertEqual(message.encode(), process.call_args_list[0].kwargs['input'])
+        self.assertTrue(json.loads(json.dumps(dict(result, success=True)))['success'])
+
+    def test_changed_draft_after_paste_never_presses_enter_or_clears_input(self):
+        captures = iter([FRAME, FRAME, FRAME.replace('Ask Codex to do anything', 'unexpected edit')])
+        with patch.object(control, 'run', return_value='{"queue": []}') as run, \
+                patch.object(control, 'native_rows', return_value=[]), patch.object(control.subprocess, 'run'), \
+                patch.object(control.time, 'sleep'):
+            result = control.native_send(dict(id='qa'), [], ['tmux'], '%1', '123', lambda: next(captures), 'our message')
+        self.assertEqual('typed', result['state'])
+        self.assertFalse(any(call.args[0][-1] in ('Enter', 'C-c') for call in run.call_args_list))
+
+
 if __name__ == '__main__':
     unittest.main()

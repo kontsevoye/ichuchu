@@ -111,6 +111,10 @@ class DeckProtocolTest {
             AgentStatus.Unknown,
             session("1", "/a/repo", "running", """, "status_source":"cached"""").status,
         )
+        assertEquals(
+            AgentStatus.Stopped,
+            session("1", "/a/repo", "stopped", """, "status_source":"cached"""").status,
+        )
         val sessions =
             listOf(
                 session("1", "/a/repo", "idle"),
@@ -257,78 +261,54 @@ class DeckProtocolTest {
     }
 
     @Test
-    fun establishedCodexAndClaudeKeepDurableQueueDelivery() = runBlocking {
+    fun claudeKeepsDurableQueueAndCodexUsesNativeInputEvenWhenLinkedAndBusy() = runBlocking {
         val wire = FakeDeckTransport()
         val client = DeckClient(wire, "default", "agent-deck")
         client.probe()
         wire.reply = DeckExecResult("""{"send_id":"queued","state":"queued"}""", "", 0)
-        for (session in
-            listOf(
-                DeckSession(
-                    json("""{"id":"codex","tool":"codex","codex_session_id":"native-thread"}""")
-                ),
-                DeckSession(json("""{"id":"claude","tool":"claude"}""")),
-            )) {
-            assertEquals("queued", client.send(session, "keep queue") {}.text("state"))
-            assertTrue(wire.command.contains("'--queue'"))
-            assertFalse(wire.command.contains("'--codex-composer-fallback'"))
-        }
-    }
-
-    @Test
-    fun freshCodexWithLogoReportedBusyUsesTheGuardedComposer() = runBlocking {
-        val wire = FakeDeckTransport()
-        val client = DeckClient(wire, "default", "agent-deck")
-        client.probe()
+        val claude = DeckSession(json("""{"id":"claude","tool":"claude"}"""))
+        assertEquals("queued", client.send(claude, "keep queue") {}.text("state"))
+        assertTrue(wire.command.contains("'--queue'"))
         wire.reply =
             DeckExecResult(
-                """{"success":true,"session_id":"fresh","delivery":"submitted","submitted":true,"confirmation":"confirmed"}""",
+                """{"success":true,"state":"submitted","delivery":"codex_native","submitted":true,"confirmation":"confirmed","settled":false}""",
                 "",
                 0,
             )
-        val receipt =
-            client.send(
-                DeckSession(json("""{"id":"fresh","tool":"codex","status":"running"}""")),
-                "first request",
-            ) {}
-        assertTrue(wire.command.contains("'--codex-composer-fallback'"))
-        assertFalse(wire.command.contains("'--defer-if-busy'"))
-        assertTrue(wire.command.contains("'--require-input-prompt'"))
-        assertFalse(wire.command.contains("'--queue'"))
-        assertTrue(wire.command.contains("'--no-wait'"))
-        assertEquals(1, wire.mutations)
-        val send = DeckSend("local", "first request", receipt)
-        assertEquals("submitted", send.state)
-        assertTrue(send.final)
-        assertFalse(send.uncertain)
+        for (nativeId in listOf("", "native-thread")) {
+            val session =
+                DeckSession(
+                    json(
+                        """{"id":"codex","tool":"codex","status":"running","codex_session_id":"$nativeId"}"""
+                    )
+                )
+            val message = "literal $(touch sentinel) 世界"
+            val send = DeckSend("local", message, client.send(session, message) {})
+            assertEquals("submitted", send.state)
+            assertFalse(send.uncertain)
+            assertTrue(wire.command.contains("' '--send' '"))
+            assertArrayEquals(message.toByteArray(), wire.stdin)
+            assertFalse(wire.command.contains(message))
+        }
+        assertEquals(3, wire.mutations)
     }
 
     @Test
-    fun freshCodexRefusalsAndAmbiguousWritesNeverClaimDeliveryOrReplay() = runBlocking {
+    fun codexNativeRefusalsAndLostResponsesNeverClaimDeliveryOrReplay() = runBlocking {
         val wire = FakeDeckTransport()
         val client = DeckClient(wire, "default", "agent-deck")
         client.probe()
         val session = DeckSession(json("""{"id":"fresh","tool":"codex","status":"waiting"}"""))
-        for (delivery in
-            listOf("acceptance_refused", "menu_open", "composer_blocked", "target_busy")) {
-            wire.reply =
-                DeckExecResult(
-                    """{"success":false,"delivery":"$delivery","error":"not typed"}""",
-                    "",
-                    1,
-                )
-            assertEquals(
-                "failed",
-                DeckSend("local", "prompt", client.send(session, "prompt") {}).state,
+        wire.reply =
+            DeckExecResult(
+                """{"success":false,"state":"failed","reason":"draft present; no keys typed","settled":true}""",
+                "",
+                1,
             )
-        }
-        for (delivery in listOf("typed", "typed_not_submitted", "unverified", "future_delivery")) {
+        assertEquals("failed", client.send(session, "prompt") {}.text("state"))
+        for (state in listOf("typed", "unknown")) {
             wire.reply =
-                DeckExecResult(
-                    """{"success":true,"delivery":"$delivery","submitted":false,"confirmation":"unknown"}""",
-                    "",
-                    0,
-                )
+                DeckExecResult("""{"success":true,"state":"$state","settled":true}""", "", 0)
             assertTrue(DeckSend("local", "prompt", client.send(session, "prompt") {}).uncertain)
         }
         val before = wire.mutations
@@ -358,6 +338,47 @@ class DeckProtocolTest {
 
     private fun json(value: String): JsonObject = parseDeckObject(value)
 
+    @Test
+    fun sessionActionsUseExactIdentityAndNeverPruneProjectFilesOrReplay() = runBlocking {
+        val wire = FakeDeckTransport()
+        val client = DeckClient(wire, "qa", "agent-deck")
+        client.probe()
+        val session = DeckSession(json("""{"id":"exact-id","tool":"codex"}"""))
+        wire.reply = DeckExecResult("""{"success":true,"id":"exact-id"}""", "", 0)
+        for (action in DeckSessionAction.entries) {
+            val before = wire.executions
+            assertTrue(client.sessionAction(session, action).flag("success"))
+            assertEquals(before + 2, wire.executions)
+            assertTrue(wire.command.contains("'-p' 'qa' 'session'"))
+            assertTrue(wire.command.contains("'exact-id'"))
+            assertFalse(wire.command.contains("prune-worktree"))
+            assertFalse(wire.command.contains("--all"))
+        }
+        wire.reply = DeckExecResult("""{"id":"different","ssh_host":"remote"}""", "", 0)
+        val before = wire.executions
+        try {
+            client.sessionAction(session, DeckSessionAction.Delete)
+            fail("A changed identity must be refused before mutation")
+        } catch (_: IllegalStateException) {}
+        assertEquals(before + 1, wire.executions)
+    }
+
+    @Test
+    fun contextUnknownAndOutOfRangeAreNeverInventedPercentages() = runBlocking {
+        val wire = FakeDeckTransport()
+        val client = DeckClient(wire, "qa", "agent-deck")
+        client.probe()
+        for (value in listOf("null", "-1", "101")) {
+            wire.reply = DeckExecResult("""{"remaining":$value,"success":true}""", "", 0)
+            assertEquals(null, client.contextRemaining("session"))
+        }
+        for (value in listOf(0, 73, 100)) {
+            wire.reply = DeckExecResult("""{"remaining":$value,"success":true}""", "", 0)
+            assertEquals(value, client.contextRemaining("session"))
+        }
+        assertEquals(0, wire.mutations)
+    }
+
     private fun page(rows: String, cursor: String) =
         DeckTimeline.parse(
             json(
@@ -383,7 +404,13 @@ internal class FakeDeckTransport(private val guard: Boolean = true) : DeckTransp
         this.command = command
         executions++
         this.stdin = stdin
-        if (command.contains("'send'") && !command.contains("'--help'")) mutations++
+        val deckSend =
+            command.startsWith("exec '") &&
+                command.contains("'send'") &&
+                !command.contains("'--help'")
+        if (deckSend || command.contains("' '--send' '")) {
+            mutations++
+        }
         onStarted()
         failure?.let { throw it }
         reply?.let {

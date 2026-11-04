@@ -20,6 +20,7 @@ import io.github.kontsevoye.ichuchu.service.agents.DeckNativeHistory
 import io.github.kontsevoye.ichuchu.service.agents.DeckProject
 import io.github.kontsevoye.ichuchu.service.agents.DeckSend
 import io.github.kontsevoye.ichuchu.service.agents.DeckSession
+import io.github.kontsevoye.ichuchu.service.agents.DeckSessionAction
 import io.github.kontsevoye.ichuchu.service.agents.DeckTimelineReducer
 import io.github.kontsevoye.ichuchu.service.agents.DeckTransportException
 import io.github.kontsevoye.ichuchu.service.agents.SshDeckTransport
@@ -134,6 +135,8 @@ data class AgentUiState(
     val upload: AgentUploadProgress? = null,
     val modelSettings: AgentModelSettings? = null,
     val changingModel: Boolean = false,
+    val sessionMutationId: String? = null,
+    val contextRemaining: Int? = null,
 ) {
     val selected: DeckSession?
         get() = sessions.firstOrNull { it.id == selectedId }
@@ -143,6 +146,7 @@ data class AgentUiState(
             online &&
                 !sending &&
                 !changingModel &&
+                sessionMutationId != selectedId &&
                 upload?.sessionId != selectedId &&
                 capabilities?.guardedSend == true &&
                 selected?.let {
@@ -319,6 +323,7 @@ class AgentWorkspace(
                             tick = 0
                             refreshSessions(deck)
                             reconcileSends(deck)
+                            refreshContext(deck)
                         }
                     }
                 } catch (e: CancellationException) {
@@ -339,6 +344,8 @@ class AgentWorkspace(
                         mutable.update {
                             it.copy(
                                 online = false,
+                                contextRemaining = null,
+                                sessionMutationId = null,
                                 connecting = false,
                                 live = false,
                                 authRequest = 0,
@@ -387,7 +394,14 @@ class AgentWorkspace(
         chatJob = null
         eventsJob = null
         mutable.update {
-            it.copy(online = false, connecting = false, live = false, authRequest = 0)
+            it.copy(
+                online = false,
+                connecting = false,
+                live = false,
+                authRequest = 0,
+                contextRemaining = null,
+                sessionMutationId = null,
+            )
         }
     }
 
@@ -418,6 +432,71 @@ class AgentWorkspace(
         }
         statusChanges.accept(sessions, observation).forEach {
             AgentNotifications.show(application, hostId, mutable.value.hostName, it)
+        }
+    }
+
+    private suspend fun refreshContext(deck: DeckClient) {
+        val session = mutable.value.selected
+        if (!foreground || session?.local != true || !session.supported) return
+        val remaining =
+            try {
+                deck.contextRemaining(session.id)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                null
+            }
+        if (client === deck && mutable.value.selectedId == session.id) {
+            mutable.update { it.copy(contextRemaining = remaining) }
+        }
+    }
+
+    fun sessionAction(id: String, action: DeckSessionAction) {
+        val ui = mutable.value
+        val deck = client ?: return
+        val session = ui.sessions.firstOrNull { it.id == id } ?: return
+        if (
+            !ui.online ||
+                !session.local ||
+                ui.sessionMutationId != null ||
+                ui.sending ||
+                ui.changingModel ||
+                ui.upload?.sessionId == id
+        ) {
+            return
+        }
+        mutable.update { it.copy(sessionMutationId = id, error = null) }
+        scope.launch {
+            try {
+                deck.sessionAction(session, action)
+                if (client !== deck) return@launch
+                refreshSessions(deck)
+                if (action == DeckSessionAction.Delete) {
+                    check(mutable.value.sessions.none { it.id == id }) {
+                        "Deletion is not confirmed. Refresh the list before trying again."
+                    }
+                    if (mutable.value.selectedId == id) back()
+                } else if (mutable.value.selectedId == id) {
+                    mutable.update { it.copy(contextRemaining = null, modelSettings = null) }
+                    startChat()
+                }
+                mutable.update { it.copy(notice = action.completed) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                if (client === deck) {
+                    mutable.update {
+                        it.copy(
+                            error =
+                                "${action.label.replaceFirstChar { char -> char.uppercase() }} not confirmed. " +
+                                    (e.message ?: "Refresh the list before trying again.")
+                        )
+                    }
+                }
+            } finally {
+                if (client === deck) mutable.update { it.copy(sessionMutationId = null) }
+                refreshRequested = true
+            }
         }
     }
 
@@ -530,6 +609,7 @@ class AgentWorkspace(
         mutable.update {
             it.copy(
                 selectedId = id,
+                contextRemaining = null,
                 showCreate = false,
                 chat = AgentChatState(),
                 chatLoading = true,
@@ -541,6 +621,7 @@ class AgentWorkspace(
             )
         }
         val cache = store
+        refreshRequested = true
         scope.launch {
             chatLock.withLock {
                 val cached = cache?.chat(id) ?: AgentChatState()
@@ -563,6 +644,7 @@ class AgentWorkspace(
         mutable.update {
             it.copy(
                 selectedId = null,
+                contextRemaining = null,
                 chat = AgentChatState(),
                 live = false,
                 chatError = null,
@@ -1021,10 +1103,21 @@ class AgentWorkspace(
         val cache = store ?: return
         val sends = mutable.value.chat.sends
         for (send in sends) {
-            if (send.sendId.isBlank() || (send.final && !send.uncertain)) continue
+            val native = send.receipt.text("delivery") == "codex_native"
+            if (
+                (send.sendId.isBlank() && !native) ||
+                    (send.final && !send.uncertain) ||
+                    (native && send.uncertain)
+            ) {
+                continue
+            }
             val receipt =
                 try {
-                    deck.sendStatus(send.sendId)
+                    if (native) {
+                        deck.nativeSendStatus(id, send.receipt)
+                    } else {
+                        deck.sendStatus(send.sendId)
+                    }
                 } catch (e: CancellationException) {
                     throw e
                 } catch (_: Exception) {

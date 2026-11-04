@@ -47,6 +47,9 @@ class LiveCodexTest {
             )
         val configBefore = if (modelControl) config.readBytes() else byteArrayOf()
         var nativeId = ""
+        var deleted = false
+        val sentinel = File(project, "lifecycle-${UUID.randomUUID()}.txt")
+        sentinel.writeText("Owned QA file must survive session deletion")
         try {
             delay(3000)
             for (turn in 1..2) {
@@ -65,7 +68,8 @@ class LiveCodexTest {
                 val message = "Reply with exactly $marker. Do not use tools."
                 val session = client.sessions().single { it.id == id }
                 val receipt = client.send(session, message) {}
-                assertTrue(receipt.flag("submitted") || receipt.text("send_id").isNotBlank())
+                assertEquals("codex_native", receipt.text("delivery"))
+                assertTrue(receipt.flag("submitted"))
                 val history =
                     withTimeout(90_000) {
                         var loaded: DeckTimeline? = null
@@ -89,6 +93,12 @@ class LiveCodexTest {
                         loaded
                     }
                 assertEquals(1, history.rows.count { it.kind == "user" && marker in it.body })
+                val delivered = client.nativeSendStatus(id, receipt)
+                assertEquals("landed", delivered.text("state"))
+                assertEquals(
+                    history.rows.single { it.kind == "user" && marker in it.body }.id,
+                    delivered.text("landed_row_id"),
+                )
                 assertTrue(
                     client
                         .sessions()
@@ -136,14 +146,42 @@ class LiveCodexTest {
                     "PASS real Codex turn $turn: exact single submission, automatic history, reopen"
                 )
             }
-        } finally {
-            val removed =
-                wire.execute(DeckCommands.command(executable, profile, "remove", id, "--json"))
+            val session = client.sessions().single { it.id == id }
+            val conversation = session.raw.text("codex_session_id")
+            val historyBefore = client.timeline(id).rows.map { it.id }
+            assertTrue(requireNotNull(client.contextRemaining(id)) in 0..100)
+            client.sessionAction(session, DeckSessionAction.Stop)
+            withTimeout(20_000) {
+                while (client.sessions().single { it.id == id }.status != AgentStatus.Stopped) {
+                    delay(500)
+                }
+            }
+            client.sessionAction(session, DeckSessionAction.Restart)
+            withTimeout(30_000) { while (client.contextRemaining(id) == null) delay(500) }
             assertEquals(
-                "Could not remove owned QA session: ${removed.stderr}",
-                0,
-                removed.exitCode,
+                conversation,
+                client.sessions().single { it.id == id }.raw.text("codex_session_id"),
             )
+            assertEquals(historyBefore, client.timeline(id).rows.map { it.id })
+            client.sessionAction(session, DeckSessionAction.Delete)
+            deleted = true
+            assertTrue(client.sessions().none { it.id == id })
+            assertTrue(client.timeline(conversation).rows.map { it.id }.containsAll(historyBefore))
+            assertEquals("Owned QA file must survive session deletion", sentinel.readText())
+            println(
+                "PASS real lifecycle: stop, restart same conversation, delete; history and project file retained"
+            )
+        } finally {
+            if (!deleted) {
+                val removed =
+                    wire.execute(DeckCommands.command(executable, profile, "remove", id, "--json"))
+                assertEquals(
+                    "Could not remove owned QA session: ${removed.stderr}",
+                    0,
+                    removed.exitCode,
+                )
+            }
+            sentinel.delete()
         }
     }
 }

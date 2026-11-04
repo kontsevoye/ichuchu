@@ -7,6 +7,7 @@ import androidx.lifecycle.ViewModelProvider
 import io.github.kontsevoye.ichuchu.service.agents.AgentConnections
 import io.github.kontsevoye.ichuchu.service.agents.DeckNativeHistory
 import io.github.kontsevoye.ichuchu.service.agents.DeckSend
+import io.github.kontsevoye.ichuchu.service.agents.DeckSessionAction
 
 /** Navigation facade; an explicitly connected workspace survives leaving this screen. */
 class AgentViewModel(application: Application, val hostId: Long) : AndroidViewModel(application) {
@@ -30,6 +31,8 @@ class AgentViewModel(application: Application, val hostId: Long) : AndroidViewMo
     fun refresh() = workspace.refresh()
 
     fun openSession(id: String) = workspace.openSession(id)
+
+    fun sessionAction(id: String, action: DeckSessionAction) = workspace.sessionAction(id, action)
 
     fun back() = workspace.back()
 

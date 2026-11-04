@@ -7,10 +7,16 @@ import androidx.compose.foundation.layout.ime
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.SoftwareKeyboardController
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.assertContentDescriptionEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.hasAnyAncestor
 import androidx.compose.ui.test.hasSetTextAction
+import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.isDialog
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.onLast
@@ -18,10 +24,13 @@ import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performTextClearance
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.swipeLeft
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.unit.Density
 import androidx.test.core.app.ActivityScenario
 import androidx.test.platform.app.InstrumentationRegistry
@@ -30,8 +39,11 @@ import io.github.kontsevoye.ichuchu.model.AuthMethod
 import io.github.kontsevoye.ichuchu.model.HostOpenMode
 import io.github.kontsevoye.ichuchu.model.HostProfile
 import io.github.kontsevoye.ichuchu.service.agents.AgentConnections
+import io.github.kontsevoye.ichuchu.service.agents.AgentStatus
 import io.github.kontsevoye.ichuchu.service.agents.DeckClient
+import io.github.kontsevoye.ichuchu.service.agents.DeckProject
 import io.github.kontsevoye.ichuchu.service.agents.SshDeckTransport
+import io.github.kontsevoye.ichuchu.service.agents.text
 import io.github.kontsevoye.ichuchu.service.ssh.NativeSshService
 import io.github.kontsevoye.ichuchu.ui.screens.agents.AgentScreen
 import io.github.kontsevoye.ichuchu.ui.screens.agents.AgentViewModel
@@ -639,6 +651,127 @@ class AgentModeTest {
             }
             runBlocking {
                 db.hostProfileDao().getById(id)?.let { db.hostProfileDao().deleteUnused(it) }
+            }
+        }
+    }
+
+    @Test
+    fun longPressSessionActionsCancelStopRestartAndDeleteOnlyTheirTarget() {
+        requireFixture()
+        val app =
+            InstrumentationRegistry.getInstrumentation().targetContext.applicationContext
+                as Application
+        val db = AppDatabase.getInstance(app)
+        val title = "Lifecycle QA ${System.currentTimeMillis()}"
+        val sessionId = runBlocking {
+            val wire = transport()
+            try {
+                val deck = DeckClient(wire, "default", "/fixture/agent-deck")
+                deck.probe()
+                deck
+                    .launch(DeckProject("/fixture/chuchu", "work"), "codex", title, "", "", "") {}
+                    .text("session_id")
+            } finally {
+                wire.interrupt()
+            }
+        }
+        val host = runBlocking {
+            db.hostProfileDao()
+                .insert(
+                    HostProfile(
+                        name = "Lifecycle fixture",
+                        host = "10.0.2.2",
+                        port = 22229,
+                        username = "deck-fixture",
+                        authMethod = AuthMethod.None,
+                        openMode = HostOpenMode.Agents,
+                        deckExecutable = "/fixture/agent-deck",
+                    )
+                )
+        }
+        val vm = AgentViewModel(app, host)
+        var keyboard: SoftwareKeyboardController? = null
+        var ime = 0
+        try {
+            GhosttyThemeRegistry.init(app)
+            compose.setContent {
+                keyboard = LocalSoftwareKeyboardController.current
+                ime = WindowInsets.ime.getBottom(LocalDensity.current)
+                IchuTheme { AgentScreen(vm, {}, {}, {}) }
+            }
+            compose.waitUntil(30_000) { vm.hostKeyPrompt.value != null || vm.state.value.online }
+            compose.runOnIdle { vm.respondToHostKey(true) }
+            compose.waitUntil(30_000) {
+                vm.state.value.online && vm.state.value.sessions.any { it.id == sessionId }
+            }
+            compose.onAllNodes(hasSetTextAction()).onLast().performTextInput(title)
+            compose.runOnIdle { keyboard?.hide() }
+            compose.waitUntil(5_000) { ime == 0 }
+            fun longPress() =
+                compose.onNodeWithTag("agent_session_$sessionId").performTouchInput { longClick() }
+            fun confirm(label: String) {
+                val selector = hasText(label) and hasAnyAncestor(isDialog())
+                val layouts = mutableListOf<TextLayoutResult>()
+                compose.onNode(selector, useUnmergedTree = true).performSemanticsAction(
+                    SemanticsActions.GetTextLayoutResult
+                ) {
+                    it(layouts)
+                }
+                assertTrue(
+                    "Confirmation label must fit on one line",
+                    layouts.single().lineCount == 1,
+                )
+                capture("session-confirm-$label")
+                compose.onNode(selector).assertIsDisplayed().performClick()
+            }
+            longPress()
+            capture("session-actions")
+            compose
+                .onNodeWithContentDescription("Restart session $title")
+                .assertIsDisplayed()
+                .performClick()
+            capture("session-action-confirm")
+            compose.onNodeWithText("Cancel").performClick()
+            assertEquals(null, vm.state.value.sessionMutationId)
+            compose.onNodeWithContentDescription("Stop session $title").performClick()
+            confirm("stop")
+            compose.waitUntil(15_000) {
+                vm.state.value.sessionMutationId == null &&
+                    vm.state.value.sessions.single { it.id == sessionId }.status ==
+                        AgentStatus.Stopped
+            }
+            assertTrue(vm.state.value.sessions.any { it.id == "fixture-existing-full-id" })
+            longPress()
+            compose.onNodeWithContentDescription("Stop session $title").assertIsNotEnabled()
+            compose.onNodeWithContentDescription("Restart session $title").performClick()
+            confirm("restart")
+            compose.waitUntil(15_000) {
+                vm.state.value.sessionMutationId == null &&
+                    vm.state.value.sessions.single { it.id == sessionId }.status ==
+                        AgentStatus.Ready
+            }
+            longPress()
+            compose
+                .onNodeWithContentDescription("Delete session $title")
+                .performScrollTo()
+                .assertIsDisplayed()
+                .performClick()
+            confirm("delete")
+            compose.waitUntil(15_000) {
+                vm.state.value.sessionMutationId == null &&
+                    vm.state.value.sessions.none { it.id == sessionId }
+            }
+            assertTrue(vm.state.value.sessions.any { it.id == "fixture-existing-full-id" })
+            compose.runOnIdle { vm.disconnect() }
+            compose.waitUntil { !vm.state.value.online }
+            assertEquals(null, vm.state.value.contextRemaining)
+        } finally {
+            compose.runOnIdle {
+                vm.disconnect()
+                vm.setForeground(false)
+            }
+            runBlocking {
+                db.hostProfileDao().getById(host)?.let { db.hostProfileDao().deleteUnused(it) }
             }
         }
     }

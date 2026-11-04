@@ -75,6 +75,24 @@ def process(channel, command):
         channel.sendall(b"reset\n")
         return 0
     if upload[:3] == ["exec", "python3", "-c"] and upload[3].startswith("# ichuchu-model-control-v1\n"):
+        if upload[4] == '--context':
+            channel.sendall(encoded({'success': True, 'remaining': 73}))
+            return 0
+        if upload[4] == '--send':
+            session_id = upload[-1]
+            body = b''
+            while data := channel.recv(8192):
+                body += data
+            message = body.decode().strip()
+            with LOCK:
+                rows = HISTORY.setdefault(session_id, [])
+                ident = 'native-' + str(time.time_ns())
+                rows.append({'id': ident, 'kind': 'user', 'body': message})
+                rows.append({'id': 'reply-' + ident, 'kind': 'assistant', 'body': 'Synthetic reply: message received.'})
+                next(s for s in SESSIONS if s['id'] == session_id)['codex_session_id'] = 'fixture-native-' + session_id
+            channel.sendall(encoded({'success': True, 'state': 'landed', 'delivery': 'codex_native',
+                                     'landed_row_id': ident, 'submitted': True, 'confirmation': 'confirmed', 'settled': True}))
+            return 0
         assert len(upload) == 9
         session, model, effort = upload[6:]
         with LOCK:
@@ -236,6 +254,20 @@ def process(channel, command):
             HISTORY[args[2]] = HISTORY[args[4]]
             next(session for session in SESSIONS if session["id"] == args[2])["codex_session_id"] = args[4]
         output = {"success": True}
+    elif args[:2] == ['session', 'show']:
+        with LOCK:
+            output = next((dict(s) for s in SESSIONS if s['id'] == args[2]), {'success': False, 'code': 'NOT_FOUND'})
+    elif args[:2] in (['session', 'restart'], ['session', 'stop'], ['session', 'remove']):
+        with LOCK:
+            session = next(s for s in SESSIONS if s['id'] == args[2])
+            if args[1] == 'remove':
+                assert '--force' in args and '--prune-worktree' not in args
+                SESSIONS.remove(session)
+            else:
+                session['status'] = 'stopped' if args[1] == 'stop' else 'waiting'
+                session['status_source'] = 'cached' if args[1] == 'stop' else 'live'
+                session['substate'] = 'process-exited' if args[1] == 'stop' else 'idle-at-empty-prompt'
+            output = {'success': True, 'id': args[2]}
     elif args[:2] == ["recall", "timeline"]:
         with LOCK:
             rows = HISTORY.get(args[2])
@@ -301,7 +333,7 @@ def process(channel, command):
         if "--no-parent" not in args:
             return 2
         with LOCK:
-            row = dict(SESSIONS[0], id=f"fixture-created-{len(SESSIONS)}", title=args[args.index("--title") + 1] if "--title" in args else "New fixture session", tool=args[args.index("-c") + 1])
+            row = dict(SESSIONS[0], id=f"fixture-created-{time.time_ns()}", title=args[args.index("--title") + 1] if "--title" in args else "New fixture session", tool=args[args.index("-c") + 1])
             row["status"] = "waiting"
             row["substate"] = "idle-at-empty-prompt"
             row.pop("codex_session_id", None)

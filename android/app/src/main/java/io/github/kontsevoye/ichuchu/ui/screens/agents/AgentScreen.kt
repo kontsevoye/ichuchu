@@ -9,6 +9,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -44,10 +45,14 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -60,6 +65,7 @@ import io.github.kontsevoye.ichuchu.service.agents.AgentStatus
 import io.github.kontsevoye.ichuchu.service.agents.DeckNativeHistory
 import io.github.kontsevoye.ichuchu.service.agents.DeckRow
 import io.github.kontsevoye.ichuchu.service.agents.DeckSend
+import io.github.kontsevoye.ichuchu.service.agents.DeckSessionAction
 import io.github.kontsevoye.ichuchu.service.agents.flag
 import io.github.kontsevoye.ichuchu.service.agents.text
 import io.github.kontsevoye.ichuchu.ui.components.IchuButton
@@ -408,11 +414,13 @@ private fun AgentContent(
                     vm::showCreate,
                     { clearDialog = true },
                     { recallDialog = true },
+                    vm::sessionAction,
                 )
         }
     }
 }
 
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 private fun ColumnScope.AgentSessions(
     state: AgentUiState,
@@ -420,11 +428,18 @@ private fun ColumnScope.AgentSessions(
     onCreate: () -> Unit,
     onClear: () -> Unit,
     onRecall: () -> Unit,
+    onAction: (String, DeckSessionAction) -> Unit,
 ) {
     val colors = IchuColors.current
     val type = IchuTypography.current
     var filter by remember { mutableStateOf("all") }
     var query by remember { mutableStateOf("") }
+    var actionSession by rememberSaveable { mutableStateOf<String?>(null) }
+    val haptics = LocalHapticFeedback.current
+    BackHandler(actionSession != null) { actionSession = null }
+    LaunchedEffect(state.sessions) {
+        if (state.sessions.none { it.id == actionSession }) actionSession = null
+    }
     val filtered =
         state.sessions.filter {
             (query.isBlank() ||
@@ -521,43 +536,71 @@ private fun ColumnScope.AgentSessions(
                     )
                 }
                 items(sessions, key = { it.id }) { session ->
-                    IchuCard(Modifier.fillMaxWidth().clickable { onOpen(session.id) }) {
-                        Column(
-                            Modifier.padding(12.dp),
-                            verticalArrangement = Arrangement.spacedBy(7.dp),
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                IchuText(
-                                    session.title,
-                                    style = type.body.copy(fontWeight = FontWeight.Medium),
-                                    modifier = Modifier.weight(1f),
-                                )
-                                IchuText("›", color = colors.textMuted)
-                            }
-                            IchuText(
-                                "${session.tool} · ${if (state.online) session.status.label else "cached · ${session.status.label}"}",
-                                style = type.bodySmall,
-                                color = statusColor(session.status),
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        if (actionSession == session.id) {
+                            AgentSessionActions(
+                                session,
+                                state.online &&
+                                    state.sessionMutationId == null &&
+                                    !state.sending &&
+                                    !state.changingModel &&
+                                    state.upload?.sessionId != session.id,
+                                onAction,
+                                { actionSession = null },
                             )
-                            if (session.detail.isNotBlank()) {
-                                IchuText(
-                                    session.detail,
-                                    style = type.bodySmall,
-                                    color = colors.textSecondary,
+                        }
+                        IchuCard(
+                            Modifier.fillMaxWidth()
+                                .testTag("agent_session_${session.id}")
+                                .combinedClickable(
+                                    onClick = {
+                                        actionSession = null
+                                        onOpen(session.id)
+                                    },
+                                    onLongClickLabel = "Session actions",
+                                    onLongClick = {
+                                        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                        actionSession = session.id
+                                    },
                                 )
-                            }
-                            if (!session.local) {
+                        ) {
+                            Column(
+                                Modifier.padding(12.dp),
+                                verticalArrangement = Arrangement.spacedBy(7.dp),
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    IchuText(
+                                        session.title,
+                                        style = type.body.copy(fontWeight = FontWeight.Medium),
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                    IchuText("›", color = colors.textMuted)
+                                }
                                 IchuText(
-                                    "Remote-owned session · open it on its owning host",
+                                    "${session.tool} · ${if (state.online) session.status.label else "cached · ${session.status.label}"}",
                                     style = type.bodySmall,
-                                    color = colors.warning,
+                                    color = statusColor(session.status),
                                 )
-                            } else if (!session.supported) {
-                                IchuText(
-                                    "Terminal session · native chat unavailable",
-                                    style = type.bodySmall,
-                                    color = colors.textMuted,
-                                )
+                                if (session.detail.isNotBlank()) {
+                                    IchuText(
+                                        session.detail,
+                                        style = type.bodySmall,
+                                        color = colors.textSecondary,
+                                    )
+                                }
+                                if (!session.local) {
+                                    IchuText(
+                                        "Remote-owned session · open it on its owning host",
+                                        style = type.bodySmall,
+                                        color = colors.warning,
+                                    )
+                                } else if (!session.supported) {
+                                    IchuText(
+                                        "Terminal session · native chat unavailable",
+                                        style = type.bodySmall,
+                                        color = colors.textMuted,
+                                    )
+                                }
                             }
                         }
                     }
@@ -1058,6 +1101,7 @@ internal fun ColumnScope.AgentChat(
             maxLines = if (largeFont) 2 else 4,
             autoFocus = false,
             modifier = Modifier.fillMaxWidth(),
+            trailingLabel = { state.contextRemaining?.let { AgentContextIndicator(it) } },
         )
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             AgentButton(
@@ -1066,16 +1110,26 @@ internal fun ColumnScope.AgentChat(
                 state.canSend && state.chat.attachments.size < 4 && state.upload == null,
                 description = "Attach photos or files",
             )
-            IchuText(
-                when {
-                    !state.online -> "Draft saved"
-                    keyboardVisible || largeFont -> ""
-                    else -> "Enter adds a new line"
-                },
-                style = type.bodySmall,
-                color = colors.textMuted,
-                modifier = Modifier.weight(1f),
-            )
+            Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
+                if (
+                    (keyboardVisible || largeFont) &&
+                        state.contextRemaining != null &&
+                        state.online &&
+                        !state.sending
+                ) {
+                    AgentContextIndicator(state.contextRemaining, compact = true)
+                } else {
+                    IchuText(
+                        when {
+                            !state.online -> "Draft saved"
+                            keyboardVisible || largeFont -> ""
+                            else -> "Enter adds a new line"
+                        },
+                        style = type.bodySmall,
+                        color = colors.textMuted,
+                    )
+                }
+            }
             AgentButton(
                 if (state.sending) "sending…" else "send ↑",
                 onSend,
@@ -1092,6 +1146,20 @@ internal fun ColumnScope.AgentChat(
             )
         }
     }
+}
+
+@Composable
+private fun AgentContextIndicator(percent: Int, compact: Boolean = false) {
+    IchuText(
+        if (compact) "$percent%" else "$percent% left",
+        style = IchuTypography.current.labelSmall,
+        color = if (percent <= 20) IchuColors.current.warning else IchuColors.current.textMuted,
+        modifier =
+            Modifier.testTag("agent_context_remaining").semantics {
+                contentDescription = "Context remaining: $percent percent"
+            },
+        maxLines = 1,
+    )
 }
 
 @Composable

@@ -153,6 +153,10 @@ of device, server and input has been exhausted.
 - [ ] AGENT-18 Current model/effort, per-model choices, stale/missing catalogs, unsupported versions, invalid pairs and unavailable models give accurate states.
 - [ ] AGENT-19 Same-value Apply, rapid taps, Close/Back, session switching, offline and lost-control responses never report unconfirmed success or replay a control.
 - [ ] AGENT-20 Session options and model dialogs remain reachable at 320dp/200% with IME; closing preserves chat/composer dimensions, draft, attachments and scroll position.
+- [ ] AGENT-21 Long-press exposes restart/stop/delete for the exact card; Cancel/Back changes nothing, and remote-owned/offline/in-flight actions are disabled.
+- [ ] AGENT-22 Restart preserves the conversation; Stop retains the entry; Delete removes only that entry/process and keeps native history and project/worktree files.
+- [ ] AGENT-23 Rapid taps, changed ownership, a missing session and a lost action response cannot repeat a mutation or claim unconfirmed success; other sessions remain intact.
+- [ ] AGENT-24 Long titles and 320dp/200% keep every lifecycle action and confirmation reachable, with whole button labels and scrollable content.
 
 ## Agent chat, drafts and attachments
 
@@ -166,7 +170,7 @@ of device, server and input has been exhausted.
 - [ ] CHAT-08 Scroll-to-end and Latest resume following; gestures suspend it.
 - [ ] CHAT-09 Markdown, long code, links, Unicode and very large messages remain usable.
 - [ ] CHAT-10 Offline draft survives navigation, reconnect and process restart.
-- [ ] CHAT-11 Busy/menu/unknown send results never type or replay an unsafe duplicate.
+- [ ] CHAT-11 Busy Claude uses its queue; ordinary busy Codex accepts native input; menus, existing terminal drafts and unknown results never cause an unsafe send or replay.
 - [ ] CHAT-12 Actual picker supports images and arbitrary binary files.
 - [ ] CHAT-13 0/1/4/5 files and exactly/over 20 MiB enforce limits consistently.
 - [ ] CHAT-14 Multiple attachments show count/newest file; every removal control is visible.
@@ -176,6 +180,11 @@ of device, server and input has been exhausted.
 - [ ] CHAT-18 Send/remove and one readable history line remain visible at 320dp/200% with IME.
 - [ ] CHAT-19 Complete/streaming/multiple memory citations collapse to readable sources; long paths, notes and Unicode expand without losing the answer or changing cached text.
 - [ ] CHAT-20 Citation-like text inside user messages, code fences, inline code, quotes, malformed or oversized blocks remains literal and inert.
+- [ ] CHAT-21 Real Codex accepts a follow-up during a running tool without waiting for turn completion or creating a Deck queue item; history contains exactly one fresh native user row.
+- [ ] CHAT-22 Native sends handle multiline/Unicode/long paste/narrow terminal input; drafts, menus, control characters, native commands and older pending Deck deliveries are protected.
+- [ ] CHAT-23 Reconnect, delayed indexing, repeated text, changed pane/thread and missing or ambiguous delivery evidence never invent a landed row or resend a request.
+- [ ] CHAT-24 Remaining context uses current native usage, handles 0/100/unknown/compaction and clears on navigation/disconnect; narrow footers fall back only to the exact conversation.
+- [ ] CHAT-25 Context appears beside Message or in existing compact button space; history/input dimensions, Send and attachment controls remain unchanged at 320dp/200% with IME.
 
 ## Settings, appearance and custom actions
 

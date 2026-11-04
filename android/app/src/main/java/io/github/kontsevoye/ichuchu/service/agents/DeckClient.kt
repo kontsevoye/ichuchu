@@ -108,6 +108,35 @@ class DeckClient(
             .filterNot { it.raw.flag("archived") }
     }
 
+    /** Explicit actions target one current local identity; they are never retried. */
+    suspend fun sessionAction(session: DeckSession, action: DeckSessionAction): JsonObject {
+        require(session.local) { "Manage this session on its owning host" }
+        require(session.id.matches(Regex("[A-Za-z0-9][A-Za-z0-9_-]{0,127}"))) {
+            "Invalid session identity"
+        }
+        val current = obj("session", "show", session.id, "--json")
+        check(current.text("id") == session.id && current.text("ssh_host").isBlank()) {
+            "Session ownership changed. Refresh the list."
+        }
+        val args =
+            when (action) {
+                DeckSessionAction.Restart ->
+                    listOf("session", "restart", session.id, "--force", "--json")
+                DeckSessionAction.Stop -> listOf("session", "stop", session.id, "--json")
+                DeckSessionAction.Delete ->
+                    listOf("session", "remove", session.id, "--force", "--json")
+            }
+        val result = transport.execute(command(args), timeoutMs = 60_000)
+        requireSuccess(result)
+        return parseDeckObject(result.stdout).also {
+            check(it.flag("success") && it.text("id") == session.id && !it.flag("skipped")) {
+                it.text("reason").ifBlank {
+                    "Action was not confirmed. Refresh the list before trying again."
+                }
+            }
+        }
+    }
+
     /** Control commands never enter the message queue or its accepted-turn ledger. */
     suspend fun modelSettings(
         id: String,
@@ -240,11 +269,7 @@ class DeckClient(
         message: String,
         onStarted: suspend () -> Unit,
     ): JsonObject {
-        if (
-            session.tool != "codex" ||
-                session.raw.text("codex_session_id").isNotBlank() ||
-                !capabilities.codexComposerSend
-        ) {
+        if (session.tool != "codex" || !capabilities.codexComposerSend) {
             return send(session.id, message, onStarted)
         }
         check(capabilities.guardedSend) {
@@ -253,61 +278,66 @@ class DeckClient(
         require(message.isNotBlank() && message.toByteArray().size <= 128 * 1024) {
             "Message must contain text and fit within 128 KiB"
         }
-        // Deck's queue worker drops --codex-composer-fallback. A fresh/remote Codex has no
-        // rollout identity yet, so use its public guarded composer path for this one send.
-        // Deck 1.16.36 mistakes Codex 0.166 welcome artwork for a busy spinner.
-        // Bypass that status wait; --require-input-prompt still rejects live turns and menus
-        // under Deck's send lock before typing. Never retry a possibly submitted message.
-        val result =
-            transport.execute(
-                command(
-                    listOf(
-                        "session",
-                        "send",
-                        session.id,
-                        "--message-file",
-                        "-",
-                        "--json",
-                        "--codex-composer-fallback",
-                        "--no-wait",
-                        "--timeout",
-                        "10s",
-                        "--require-input-prompt",
-                        "--no-tag",
-                    )
-                ),
-                message.toByteArray(Charsets.UTF_8),
-                timeoutMs = 45_000,
-                onStarted = onStarted,
-            )
-        val receipt =
-            optionalParse(result.stdout) ?: error("Agent Deck returned no delivery result")
-        val state =
-            when {
-                receipt.flag("submitted") && receipt.text("confirmation") == "confirmed" ->
-                    "submitted"
-                receipt.text("delivery") in
-                    setOf(
-                        "acceptance_refused",
-                        "menu_open",
-                        "pane_gone",
-                        "composer_blocked",
-                        "target_busy",
-                        "line_too_long",
-                    ) -> "failed"
-                receipt.text("delivery") in setOf("typed", "typed_not_submitted") -> "typed"
-                else -> "unknown"
-            }
-        // A synchronous result has no durable send ID. Never fabricate landing evidence or
-        // replay after a lost SSH reply. Keep the local intent until the user reviews it.
-        return JsonObject(
-            receipt +
-                mapOf(
-                    "state" to JsonPrimitive(state),
-                    "settled" to JsonPrimitive(true),
-                    "reason" to JsonPrimitive(receipt.text("error")),
+        return nativeControl("--send", session.id, message.toByteArray(Charsets.UTF_8), onStarted)
+    }
+
+    suspend fun contextRemaining(id: String): Int? =
+        nativeControl("--context", id).number("remaining")?.takeIf { it in 0..100 }
+
+    suspend fun nativeSendStatus(id: String, receipt: JsonObject): JsonObject =
+        nativeControl("--receipt", id, receipt.toString().toByteArray(Charsets.UTF_8))
+
+    private suspend fun nativeControl(
+        operation: String,
+        id: String,
+        stdin: ByteArray? = null,
+        onStarted: suspend () -> Unit = {},
+    ): JsonObject {
+        val script =
+            checkNotNull(javaClass.getResourceAsStream("/agent_model_control.py"))
+                .bufferedReader()
+                .use { it.readText() }
+        val command =
+            "exec python3 -c " +
+                listOf(script, operation, executable, profile, id)
+                    .joinToString(" ", transform = DeckCommands::quote)
+        val result = transport.execute(command, stdin, timeoutMs = 45_000, onStarted = onStarted)
+        val receipt = optionalParse(result.stdout)
+        // A refusal before typing is safe to report; a lost response remains unknown and is never
+        // retried.
+        if (
+            operation != "--context" &&
+                receipt?.text("state") in setOf("failed", "typed", "submitted", "landed", "unknown")
+        ) {
+            val value = checkNotNull(receipt)
+            val valid =
+                when (value.text("state")) {
+                    "landed" -> value.text("landed_row_id").isNotBlank()
+                    "submitted" ->
+                        value.flag("submitted") && value.text("confirmation") == "confirmed"
+                    else -> true
+                }
+            return if (valid) {
+                value
+            } else {
+                JsonObject(
+                    value +
+                        mapOf(
+                            "state" to JsonPrimitive("unknown"),
+                            "settled" to JsonPrimitive(true),
+                            "reason" to
+                                JsonPrimitive(
+                                    "Native delivery was not confirmed. Check history before resending."
+                                ),
+                        )
                 )
-        )
+            }
+        }
+        requireSuccess(result)
+        check(operation == "--context") {
+            "Native delivery result is unrecognized. Check history before sending again."
+        }
+        return receipt ?: error("Remote session control returned no result")
     }
 
     suspend fun send(id: String, message: String, onStarted: suspend () -> Unit): JsonObject {

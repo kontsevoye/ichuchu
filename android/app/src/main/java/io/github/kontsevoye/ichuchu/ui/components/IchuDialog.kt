@@ -6,7 +6,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
@@ -25,6 +26,7 @@ import androidx.compose.ui.window.DialogWindowProvider
 import io.github.kontsevoye.ichuchu.ui.theme.IchuColors
 import io.github.kontsevoye.ichuchu.ui.theme.IchuTypography
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun IchuDialog(
     title: String,
@@ -41,10 +43,7 @@ fun IchuDialog(
     val typography = IchuTypography.current
     val shape = RectangleShape
 
-    Dialog(
-        onDismissRequest = onDismiss,
-        properties = properties,
-    ) {
+    Dialog(onDismissRequest = onDismiss, properties = properties) {
         val window = (LocalView.current.parent as? DialogWindowProvider)?.window
         SideEffect {
             // Compose 1.7 leaves the dialog's input mode unchanged on Android 12+.
@@ -72,9 +71,10 @@ fun IchuDialog(
             Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState())) {
                 content()
             }
-            Row(
+            FlowRow(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 IchuButton(
                     onClick = onDismiss,
@@ -84,11 +84,7 @@ fun IchuDialog(
                 ) {
                     IchuText(dismissLabel, style = typography.label, color = colors.textMuted)
                 }
-                IchuButton(
-                    onClick = onConfirm,
-                    enabled = confirmEnabled,
-                    bracketed = true,
-                ) {
+                IchuButton(onClick = onConfirm, enabled = confirmEnabled, bracketed = true) {
                     IchuText(confirmLabel, style = typography.label, color = colors.onAccent)
                 }
             }

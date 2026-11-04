@@ -191,7 +191,9 @@ fixture's two tmux sockets and tracked processes.
 through the Android client's command boundary. It creates a session, sends two
 small provider requests, verifies one native user row per request and the actual
 responses, and reopens persisted history by Deck ID without manually linking it.
-Its `finally` block removes only the session it created. It does not replace the
+It also verifies native remaining context, stops/restarts the same conversation,
+then deletes the Deck entry and checks that native history and an owned project
+sentinel remain. Its cleanup removes only the session and sentinel it created. It does not replace the
 Android SSH/UI tests or physical-device acceptance.
 
 Use an otherwise disposable profile named `ichuchu-liveqa-*` and a trusted test
@@ -224,3 +226,11 @@ For the 320dp/200% pass, set the disposable emulator's system `font_scale` to `2
 as well as passing `-e agentFontScale 2.0`: popup/dialog windows can use the system
 density rather than the test's composition-local override. Restore `font_scale`
 to `1.0` before ordinary acceptance.
+
+`AgentModeTest.longPressSessionActionsCancelStopRestartAndDeleteOnlyTheirTarget`
+creates a disposable fixture session and exercises long press, cancellation,
+stop/restart/delete and protection of another session. Confirmation labels must
+remain on one line at large font sizes. `AgentChatScrollTest` checks the context
+indicator with real IME resize and compares the history/input bounds with and
+without a value, including zero and unknown. The fixture's percentage is synthetic;
+native token accounting and busy Codex acceptance require a separate live run.

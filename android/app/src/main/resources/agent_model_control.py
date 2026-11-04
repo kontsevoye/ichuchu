@@ -1,12 +1,15 @@
 # ichuchu-model-control-v1
-"""Session-only model controls. Runs on the SSH host; never submits a model prompt.
+"""Session controls and one-shot native Codex input on the SSH host.
 
 Codex 0.166's /model arguments apply to the current conversation. Keep them out
 of Deck's accepted-turn protocol: control commands do not create a user turn.
 The shared Deck send flock serializes this operation with normal deliveries.
 """
 import fcntl
+from datetime import datetime
+import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -14,6 +17,7 @@ import shutil
 import subprocess
 import sys
 import time
+import uuid
 
 
 class Refused(Exception):
@@ -31,10 +35,16 @@ def run(args, timeout=8):
     return result.stdout
 
 
+def plain_frame(frame):
+    # tmux -e retains both SGR colors and OSC hyperlinks around pasted URLs.
+    frame = re.sub(r'\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)', '', frame)
+    return re.sub(r'\x1b\[[0-9;:]*[A-Za-z]', '', frame)
+
+
 def ready_frame(frame, expected='Ask Codex to do anything'):
     """Fail closed on busy, unknown footer, menus, multiline input and drafts."""
     raw_rows = frame.splitlines()
-    rows = re.sub(r'\x1b\[[0-9;:]*[A-Za-z]', '', frame).splitlines()
+    rows = plain_frame(frame).splitlines()
     prompts = [i for i, line in enumerate(rows) if line.startswith(('›', '»'))]
     if not prompts:
         raise Refused('Open terminal and close the current dialog first.')
@@ -108,8 +118,7 @@ def available_models(session):
     if not path.is_file() or path.stat().st_size > 5 * 1024 * 1024:
         raise Refused('Codex model catalog is unavailable. Open /model in the terminal first.')
     catalog = json.loads(path.read_text())
-    # Deck 1.16.36 only recognizes the normal Codex prompt for message delivery.
-    # Ultra uses »; permit reading/exiting that mode, but don't enable a broken chat.
+    # Ultra remains terminal-only until its input semantics have live acceptance.
     models = {m['slug']: [e['effort'] for e in m.get('supported_reasoning_levels', []) if e['effort'] != 'ultra']
               for m in catalog.get('models', []) if m.get('visibility') == 'list' and m.get('slug')}
     if not models:
@@ -117,7 +126,175 @@ def available_models(session):
     return models
 
 
-def control(executable, profile, session_id, model='', effort=''):
+def input_frame(frame, expected=None):
+    """Recognize Codex's ordinary composer even while a turn is running."""
+    raw = frame.splitlines()
+    rows = plain_frame(frame).splitlines()
+    prompts = [i for i, line in enumerate(rows) if line.startswith(('›', '»'))]
+    if not prompts:
+        raise Refused('Open the terminal and close its dialog first.')
+    index = prompts[-1]
+    footer = next((i for i in range(index + 1, len(rows)) if re.match(
+        r'^\s+\S+\s+(none|minimal|low|medium|high|xhigh|max|ultra)\s+· ', rows[i], re.I)), None)
+    if footer is None:
+        raise Refused('Cannot verify the Codex composer. Open the terminal.')
+    tail = [line.strip() for line in rows[footer + 1:] if line.strip()]
+    if len(tail) > 1 or any(not (line.startswith('? for shortcuts') or
+            line.startswith('tab to queue message') or re.match(r'^⚠ \d+.*f2', line)) for line in tail):
+        raise Refused('Close the terminal menu before sending.')
+    body = '\n'.join([rows[index][1:].strip()] + [line[2:].rstrip() if line.startswith('  ') else line.rstrip()
+                     for line in rows[index + 1:footer]]).strip()
+    if expected is None:
+        if body and not (body == 'Ask Codex to do anything' and dim_placeholder(raw[index]) and
+                         not any(line.strip() for line in rows[index + 1:footer])):
+            raise Refused('The terminal contains a draft. Send or clear it there first.')
+    else:
+        # TUI soft wrapping can split a URL/word or replace a word separator.
+        # Permit either only at visible line boundaries, never inside a line.
+        lines = [' '.join(line.split()) for line in body.splitlines() if line.strip()]
+        same = re.fullmatch(' ?'.join(map(re.escape, lines)), ' '.join(expected.split())) is not None
+        pasted = re.fullmatch(r'\[Pasted Content ' + str(len(expected)) + r' chars\](?: #\d+)?', body)
+        if not same and not (len(expected) > 1000 and pasted):
+            raise Refused('The pasted message could not be verified. Check the terminal before trying again.')
+    return rows[footer]
+
+
+def context_percent(session, frame):
+    # Prefer the actual TUI value; the rollout fallback uses Codex 0.166's own formula.
+    rows = plain_frame(frame).splitlines()
+    for line in reversed(rows[-4:]):
+        match = re.search(r'^\s+\S+\s+(?:none|minimal|low|medium|high|xhigh|max|ultra)\s+· .*\bContext (\d{1,3})% left\b', line, re.I)
+        if match and 0 <= int(match[1]) <= 100:
+            return int(match[1])
+    native_id = session.get('codex_session_id')
+    path = Path(session.get('transcript_path') or '')
+    if not native_id or not path.is_file():
+        return None
+    with path.open('rb') as stream:
+        first = json.loads(stream.readline(1024 * 1024))
+        if first.get('type') != 'session_meta' or first.get('payload', {}).get('id') != native_id:
+            return None
+        stream.seek(0, 2)
+        start = max(0, stream.tell() - 2 * 1024 * 1024)
+        stream.seek(start)
+        if start:
+            stream.readline()
+        lines = stream.read().splitlines()
+    for line in reversed(lines):
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        payload = event.get('payload') or {}
+        if event.get('type') != 'event_msg' or payload.get('type') != 'token_count':
+            continue
+        info = payload.get('info') or {}
+        window = info.get('model_context_window')
+        used = (info.get('last_token_usage') or {}).get('total_tokens')
+        if not isinstance(window, int) or not isinstance(used, int) or window <= 0 or used < 0:
+            return None
+        if window <= 12000:
+            return 0
+        remaining = max(0, window - 12000 - max(0, used - 12000))
+        return min(100, math.floor(100 * remaining / (window - 12000) + .5))
+    return None
+
+
+def native_rows(deck, session_id):
+    result = subprocess.run(deck + ['recall', 'timeline', session_id, '--tail', '80', '--json'],
+                            text=True, capture_output=True, timeout=8)
+    value = json.loads(result.stdout)
+    if result.returncode and value.get('code') != 'NOT_FOUND':
+        raise Refused(value.get('error') or 'Cannot read native delivery evidence.')
+    rows = value.get('turns', [])
+    if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+        raise Refused('Native history returned an unrecognized result.')
+    return rows
+
+
+def message_digest(text):
+    return hashlib.sha256(text.replace('\r\n', '\n').strip().encode()).hexdigest()
+
+
+def native_receipt(session, deck, pid, receipt):
+    if not isinstance(receipt, dict):
+        raise Refused('Native delivery receipt is invalid. Check history before resending.')
+    baseline = receipt.get('native_baseline')
+    since = receipt.get('native_not_before')
+    if (not isinstance(baseline, list) or len(baseline) > 80 or
+            any(not isinstance(row, str) for row in baseline) or
+            not isinstance(since, (int, float)) or not math.isfinite(since) or since <= 0 or
+            not re.fullmatch(r'[a-f0-9]{64}', receipt.get('native_digest', ''))):
+        return dict(receipt, state='unknown', settled=True, reason='Native delivery evidence is incomplete. Check history before resending.')
+    if (receipt.get('native_pid') != pid or (receipt.get('native_thread') and
+            receipt['native_thread'] != session.get('codex_session_id'))):
+        return dict(receipt, state='unknown', settled=True, reason='Session changed before delivery could be confirmed. Do not resend without checking history.')
+    def is_new(row):
+        try:
+            return datetime.fromisoformat(row.get('ts', '').replace('Z', '+00:00')).timestamp() >= since
+        except (TypeError, ValueError):
+            return False
+
+    baseline = set(baseline)
+    found = [row for row in native_rows(deck, session['id']) if row.get('kind') == 'user' and
+             row.get('id') and row['id'] not in baseline and is_new(row) and
+             message_digest(row.get('body', '')) == receipt['native_digest']]
+    if len(found) == 1:
+        return dict(receipt, state='landed', landed_row_id=found[0]['id'], settled=True, reason='')
+    if len(found) > 1:
+        return dict(receipt, state='unknown', settled=True, reason='Several matching native inputs appeared. Check history before resending.')
+    return receipt
+
+
+def native_send(session, deck, tmux, pane, pid, capture, message):
+    if not message.strip() or len(message.encode()) > 128 * 1024:
+        raise Refused('Message must contain text and fit within 128 KiB.')
+    if any(ord(char) < 32 and char not in '\n\t' for char in message):
+        raise Refused('The message contains unsupported terminal control characters.')
+    if message.lstrip().startswith('!') or re.match(r'^/[A-Za-z-]+(?:\s|$)', message.lstrip()):
+        raise Refused('Use the terminal for native slash or shell commands.')
+    since = math.floor(time.time() * 1000) / 1000
+    baseline = [row['id'] for row in native_rows(deck, session['id']) if row.get('id')]
+    queue = json.loads(run(deck + ['session', 'queue', 'list', session['id'], '--json']))
+    entries = queue if isinstance(queue, list) else queue.get('entries', queue.get('queue', []))
+    if any(row.get('state', row.get('status', '')) not in ('landed', 'failed', 'cancelled', 'canceled') for row in entries):
+        raise Refused('An older Deck message is still queued. Cancel or resolve it before sending another.')
+    input_frame(capture())
+    buffer = 'ichuchu-' + uuid.uuid4().hex
+    typed = False
+    receipt = dict(state='unknown', settled=True, delivery='codex_native', native_pid=pid,
+                   native_thread=session.get('codex_session_id', ''), native_baseline=baseline,
+                   native_digest=message_digest(message), native_not_before=since)
+    try:
+        subprocess.run(tmux + ['load-buffer', '-b', buffer, '-'], input=message.encode(),
+                       capture_output=True, check=True, timeout=8)
+        input_frame(capture())
+        # Bracketed paste keeps multiline/untrusted text out of the terminal key parser.
+        typed = True
+        run(tmux + ['paste-buffer', '-p', '-d', '-b', buffer, '-t', pane])
+        time.sleep(.25)
+        input_frame(capture(), expected=message)
+        run(tmux + ['send-keys', '-t', pane, 'Enter'])
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            try:
+                input_frame(capture())
+                receipt.update(state='submitted', submitted=True, confirmation='confirmed', settled=False)
+                return native_receipt(session, deck, pid, receipt)
+            except Refused:
+                time.sleep(.1)
+        receipt['reason'] = 'Submission could not be confirmed. Check the terminal before resending.'
+        return receipt
+    except (Refused, OSError, ValueError, subprocess.SubprocessError) as error:
+        return dict(receipt, state='typed' if typed else 'failed', reason=str(error))
+    finally:
+        try:
+            subprocess.run(tmux + ['delete-buffer', '-b', buffer], capture_output=True, timeout=8)
+        except (OSError, subprocess.SubprocessError):
+            pass
+
+
+def control(executable, profile, session_id, model='', effort='', operation='model', payload=None):
     for value in (profile, session_id):
         if not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', value):
             raise Refused('Invalid session identity')
@@ -126,11 +303,13 @@ def control(executable, profile, session_id, model='', effort=''):
     if effort and effort not in ('none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'):
         raise Refused('Invalid reasoning effort')
     if effort == 'ultra':
-        raise Refused('Use the terminal for Ultra; Agent Deck cannot deliver chat messages in that mode.')
+        raise Refused('Use the terminal for Ultra; in-app controls support the other reasoning levels.')
     deck = [executable, '-p', profile]
     session = json.loads(run(deck + ['session', 'show', session_id, '--json']))
     if session.get('id') != session_id or session.get('ssh_host') or session.get('wrapper'):
-        raise Refused('This session requires the terminal to change its model.')
+        raise Refused('Manage this session in its owning terminal.')
+    if operation == 'context' and session.get('tool') != 'codex':
+        return dict(remaining=None)
     if session.get('tool') == 'claude':
         if effort:
             raise Refused('Use the Claude terminal to change reasoning effort.')
@@ -152,8 +331,8 @@ def control(executable, profile, session_id, model='', effort=''):
         raise Refused('Codex executable is unavailable over SSH. Use the terminal.')
     version = run([codex, '--version']).strip()
     if not re.search(r'\b0\.166\.\d+\b', version):
-        raise Refused('In-app controls currently require Codex 0.166.x. Use the terminal /model menu.')
-    models = available_models(session)
+        raise Refused('In-app controls currently require Codex 0.166.x. Open the terminal for this session.')
+    models = available_models(session) if operation == 'model' else {}
     if model and (model not in models or (effort and effort not in models[model])):
         raise Refused('This model/reasoning combination is unavailable. Read current settings again.')
     socket = session.get('tmux_socket') or 'agent-deck'
@@ -178,7 +357,14 @@ def control(executable, profile, session_id, model='', effort=''):
     def history():
         return run(tmux + ['capture-pane', '-p', '-J', '-S', '-200', '-t', pane])
 
+    if operation == 'context':
+        return dict(remaining=context_percent(session, capture()))
+    if operation == 'receipt':
+        capture()  # The pane identity must still match before resolving a pending send.
+        return native_receipt(session, deck, pid, payload)
     with send_lock(session_id):
+        if operation == 'send':
+            return native_send(session, deck, tmux, pane, pid, capture, payload)
         before = capture()
         current_model, current_effort = ready_frame(before)
         if not model and not effort:
@@ -229,10 +415,21 @@ def control(executable, profile, session_id, model='', effort=''):
 
 def main():
     try:
-        result = control(*sys.argv[1:])
-        print(json.dumps(dict(success=True, **result)))
+        if sys.argv[1] in ('--send', '--receipt', '--context'):
+            operation = sys.argv[1][2:]
+            payload = sys.stdin.read() if operation in ('send', 'receipt') else None
+            if operation == 'receipt':
+                payload = json.loads(payload)
+            result = control(*sys.argv[2:], operation=operation, payload=payload)
+        else:
+            result = control(*sys.argv[1:])
+        print(json.dumps(dict(result, success=True)))
     except (Refused, OSError, ValueError, subprocess.TimeoutExpired) as error:
-        print(json.dumps(dict(success=False, error=str(error))))
+        result = dict(success=False, error=str(error))
+        if sys.argv[1] in ('--send', '--receipt'):
+            result.update(state='failed' if sys.argv[1] == '--send' else 'unknown',
+                          settled=True, reason=str(error), delivery='codex_native')
+        print(json.dumps(result))
         sys.exit(1)
 
 
