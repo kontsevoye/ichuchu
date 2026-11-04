@@ -39,6 +39,15 @@ class AgentViewModel(application: Application, val hostId: Long) : AndroidViewMo
 
     fun send() = workspace.send()
 
+    fun showModelSettings() = workspace.showModelSettings()
+
+    fun updateModelSettings(model: String, effort: String) =
+        workspace.updateModelSettings(model, effort)
+
+    fun dismissModelSettings() = workspace.dismissModelSettings()
+
+    fun applyModelSettings() = workspace.applyModelSettings()
+
     fun attachFiles(id: String, uris: List<android.net.Uri>) = workspace.attachFiles(id, uris)
 
     fun cancelUpload() = workspace.cancelUpload()

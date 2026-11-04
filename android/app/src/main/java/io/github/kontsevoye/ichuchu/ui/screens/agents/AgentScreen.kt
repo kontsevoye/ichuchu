@@ -214,6 +214,17 @@ private fun AgentContent(
             attachmentTarget?.let { vm.attachFiles(it, uris) }
             attachmentTarget = null
         }
+    state.modelSettings?.let { form ->
+        AgentModelDialog(
+            state,
+            form,
+            vm::updateModelSettings,
+            vm::applyModelSettings,
+            vm::dismissModelSettings,
+            vm::showModelSettings,
+            onTerminal,
+        )
+    }
     state.historyChoices?.let { choices ->
         AgentHistoryPicker(
             choices,
@@ -297,12 +308,7 @@ private fun AgentContent(
                 )
             }
             if (state.selectedId != null) {
-                AgentButton(
-                    ">_",
-                    onTerminal,
-                    state.online && state.selected?.local == true,
-                    "Open this session in terminal",
-                )
+                AgentSessionMenu(state, onTerminal, vm::showModelSettings)
             } else {
                 AgentButton("⋯", onEditHost, description = "Connection settings")
             }
@@ -775,7 +781,7 @@ private fun AgentHistoryPicker(
 }
 
 @Composable
-private fun AgentPicker(
+internal fun AgentPicker(
     label: String,
     value: String,
     choices: List<String>,
@@ -1108,7 +1114,7 @@ private fun AgentMessage(row: DeckRow, tool: String) {
             style = type.bodySmall,
             color = if (row.kind == "user") colors.accent else colors.textMuted,
         )
-        AgentMarkdown(row.body.ifBlank { row.title })
+        AgentMarkdown(row.body.ifBlank { row.title }, memoryCitations = row.kind == "assistant")
     }
 }
 
@@ -1152,7 +1158,7 @@ private fun AgentAction(row: DeckRow, depth: Int = 0) {
             if (row.detail.isNotBlank()) {
                 SelectionContainer { IchuText(row.detail, style = type.bodySmall) }
             }
-            if (row.body.isNotBlank()) AgentMarkdown(row.body)
+            if (row.body.isNotBlank()) AgentMarkdown(row.body, memoryCitations = false)
             if (row.meta.flag("truncated")) {
                 IchuText(
                     "Output truncated by Agent Deck",

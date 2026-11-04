@@ -39,9 +39,28 @@ class LiveCodexTest {
             ) {}
         val id = created.text("id").ifBlank { created.text("session_id") }
         require(id.isNotBlank())
+        val modelControl = System.getenv("ICHUCHU_LIVE_MODEL_CONTROL") == "1"
+        val config =
+            File(
+                System.getenv("CODEX_HOME") ?: "${System.getProperty("user.home")}/.codex",
+                "config.toml",
+            )
+        val configBefore = if (modelControl) config.readBytes() else byteArrayOf()
+        var nativeId = ""
         try {
             delay(3000)
             for (turn in 1..2) {
+                val wantedModel = if (turn == 1) "gpt-6.1-sol" else "gpt-6-luna"
+                val wantedEffort = if (turn == 1) "low" else "high"
+                if (modelControl) {
+                    val available = client.modelSettings(id)
+                    assertTrue(wantedModel in available.models)
+                    assertTrue(wantedEffort in available.models.getValue(wantedModel))
+                    assertEquals(
+                        DeckModelSettings(wantedModel, wantedEffort),
+                        client.modelSettings(id, wantedModel, wantedEffort).current,
+                    )
+                }
                 val marker = "ICHUCHU_${turn}_${UUID.randomUUID().toString().replace("-", "")}"
                 val message = "Reply with exactly $marker. Do not use tools."
                 val session = client.sessions().single { it.id == id }
@@ -78,6 +97,35 @@ class LiveCodexTest {
                         .text("codex_session_id")
                         .isNotBlank()
                 )
+                if (modelControl) {
+                    val session = client.sessions().single { it.id == id }
+                    val actualId = session.raw.text("codex_session_id")
+                    if (nativeId.isNotBlank()) assertEquals(nativeId, actualId)
+                    nativeId = actualId
+                    val home = session.raw.text("resolved_codex_home").ifBlank { config.parent }
+                    val rollout =
+                        File(home, "sessions").walkTopDown().maxDepth(5).first {
+                            it.name.endsWith("$nativeId.jsonl")
+                        }
+                    val context =
+                        rollout
+                            .useLines { lines ->
+                                lines.map(::parseDeckObject).last {
+                                    it.text("type") == "turn_context"
+                                }
+                            }["payload"]
+                            as kotlinx.serialization.json.JsonObject
+                    assertEquals(wantedModel, context.text("model"))
+                    assertEquals(wantedEffort, context.text("effort"))
+                    org.junit.Assert.assertArrayEquals(
+                        "Session controls changed global defaults",
+                        configBefore,
+                        config.readBytes(),
+                    )
+                    println(
+                        "PASS native turn_context: $wantedModel $wantedEffort; same conversation; defaults unchanged"
+                    )
+                }
                 // A new client must recover persisted history by Deck ID without linkHistory().
                 val reopened = DeckClient(wire, profile, executable)
                 reopened.probe()

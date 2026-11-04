@@ -15,6 +15,7 @@ import io.github.kontsevoye.ichuchu.service.agents.AgentStatusChanges
 import io.github.kontsevoye.ichuchu.service.agents.DeckCapabilities
 import io.github.kontsevoye.ichuchu.service.agents.DeckClient
 import io.github.kontsevoye.ichuchu.service.agents.DeckCommandException
+import io.github.kontsevoye.ichuchu.service.agents.DeckModelSettings
 import io.github.kontsevoye.ichuchu.service.agents.DeckNativeHistory
 import io.github.kontsevoye.ichuchu.service.agents.DeckProject
 import io.github.kontsevoye.ichuchu.service.agents.DeckSend
@@ -131,6 +132,8 @@ data class AgentUiState(
     val sending: Boolean = false,
     val loadingOlder: Boolean = false,
     val upload: AgentUploadProgress? = null,
+    val modelSettings: AgentModelSettings? = null,
+    val changingModel: Boolean = false,
 ) {
     val selected: DeckSession?
         get() = sessions.firstOrNull { it.id == selectedId }
@@ -139,6 +142,7 @@ data class AgentUiState(
         get() =
             online &&
                 !sending &&
+                !changingModel &&
                 upload?.sessionId != selectedId &&
                 capabilities?.guardedSend == true &&
                 selected?.let {
@@ -154,6 +158,16 @@ data class AgentUiState(
                             )
                 } == true
 }
+
+data class AgentModelSettings(
+    val sessionId: String,
+    val current: DeckModelSettings = DeckModelSettings(),
+    val choice: DeckModelSettings = DeckModelSettings(),
+    val loading: Boolean = true,
+    val error: String? = null,
+    val uncertain: Boolean = false,
+    val models: Map<String, List<String>> = emptyMap(),
+)
 
 /** Connection lifetime is independent of navigation. Reads may retry; mutations never replay. */
 class AgentWorkspace(
@@ -522,6 +536,7 @@ class AgentWorkspace(
                 chatError = null,
                 historyMissing = false,
                 historyChoices = null,
+                modelSettings = null,
                 live = false,
             )
         }
@@ -546,9 +561,127 @@ class AgentWorkspace(
         chatJob?.cancel()
         chatJob = null
         mutable.update {
-            it.copy(selectedId = null, chat = AgentChatState(), live = false, chatError = null)
+            it.copy(
+                selectedId = null,
+                chat = AgentChatState(),
+                live = false,
+                chatError = null,
+                modelSettings = null,
+            )
         }
         return true
+    }
+
+    fun showModelSettings() {
+        val ui = mutable.value
+        val session = ui.selected ?: return
+        val deck = client ?: return
+        if (!ui.online || ui.changingModel || !session.local || !session.supported) return
+        val form = AgentModelSettings(session.id)
+        mutable.update { it.copy(modelSettings = form) }
+        scope.launch {
+            try {
+                val current = deck.modelSettings(session.id)
+                mutable.update {
+                    if (it.modelSettings !== form || client !== deck) {
+                        it
+                    } else {
+                        it.copy(
+                            modelSettings =
+                                form.copy(
+                                    current = current.current,
+                                    choice = current.current,
+                                    models = current.models,
+                                    loading = false,
+                                )
+                        )
+                    }
+                }
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
+                mutable.update {
+                    if (it.modelSettings !== form || client !== deck) {
+                        it
+                    } else {
+                        it.copy(modelSettings = form.copy(loading = false, error = e.message))
+                    }
+                }
+            }
+        }
+    }
+
+    fun updateModelSettings(model: String, effort: String) {
+        mutable.update { ui ->
+            if (ui.changingModel) {
+                ui
+            } else {
+                ui.copy(
+                    modelSettings =
+                        ui.modelSettings?.copy(choice = DeckModelSettings(model, effort))
+                )
+            }
+        }
+    }
+
+    fun dismissModelSettings() {
+        if (!mutable.value.changingModel) mutable.update { it.copy(modelSettings = null) }
+    }
+
+    fun applyModelSettings() {
+        val ui = mutable.value
+        val form = ui.modelSettings ?: return
+        val deck = client ?: return
+        if (
+            !ui.online ||
+                ui.sending ||
+                ui.changingModel ||
+                form.loading ||
+                form.error != null ||
+                form.sessionId != ui.selectedId ||
+                form.choice == form.current ||
+                form.choice.model.isBlank()
+        ) {
+            return
+        }
+        mutable.update { it.copy(changingModel = true) }
+        scope.launch {
+            try {
+                val applied =
+                    deck.modelSettings(form.sessionId, form.choice.model, form.choice.effort)
+                mutable.update {
+                    if (it.modelSettings?.sessionId != form.sessionId || client !== deck) {
+                        it
+                    } else {
+                        it.copy(modelSettings = null)
+                    }
+                }
+                if (mutable.value.selectedId == form.sessionId && client === deck) {
+                    android.widget.Toast.makeText(
+                            application,
+                            "${applied.current.model} · ${applied.current.effort.ifBlank { "default" }}",
+                            android.widget.Toast.LENGTH_SHORT,
+                        )
+                        .show()
+                }
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
+                mutable.update {
+                    if (it.modelSettings?.sessionId != form.sessionId) {
+                        it
+                    } else {
+                        it.copy(
+                            modelSettings =
+                                form.copy(
+                                    error = e.message ?: "Change unconfirmed. Check the terminal.",
+                                    uncertain = true,
+                                )
+                        )
+                    }
+                }
+            } finally {
+                mutable.update { it.copy(changingModel = false) }
+            }
+        }
     }
 
     private fun startChat() {

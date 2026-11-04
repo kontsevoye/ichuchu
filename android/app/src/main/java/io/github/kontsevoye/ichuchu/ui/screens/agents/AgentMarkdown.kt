@@ -7,8 +7,12 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.text.ClickableText
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -21,7 +25,49 @@ import io.github.kontsevoye.ichuchu.ui.theme.IchuTypography
 
 /** Small, inert Markdown subset: no HTML, remote images, scripts or automatic URL requests. */
 @Composable
-internal fun AgentMarkdown(text: String) {
+internal fun AgentMarkdown(text: String, memoryCitations: Boolean = false) {
+    val parts =
+        remember(text, memoryCitations) {
+            if (memoryCitations) agentMarkdownParts(text) else listOf(AgentMarkdownPart(text))
+        }
+    Column(Modifier.fillMaxWidth()) {
+        parts.forEach { part ->
+            if (part.sources == null) {
+                AgentMarkdownText(part.text)
+            } else {
+                var expanded by remember { mutableStateOf(false) }
+                val count = if (part.receiving) "receiving…" else part.sources.size.toString()
+                val label =
+                    if (LocalDensity.current.fontScale >= 1.5f) "Sources" else "Memory sources"
+                AgentButton(
+                    "${if (expanded) "▾" else "▸"} $label · $count",
+                    { expanded = !expanded },
+                    description = "Memory sources · $count",
+                )
+                if (expanded) {
+                    SelectionContainer {
+                        Column(Modifier.fillMaxWidth().padding(horizontal = 8.dp)) {
+                            part.sources.forEach { source ->
+                                IchuText(source.location, style = IchuTypography.current.bodySmall)
+                                if (source.note.isNotBlank()) {
+                                    IchuText(
+                                        source.note,
+                                        style = IchuTypography.current.bodySmall,
+                                        color = IchuColors.current.textMuted,
+                                        modifier = Modifier.padding(bottom = 8.dp),
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AgentMarkdownText(text: String) {
     val colors = IchuColors.current
     val type = IchuTypography.current
     val uriHandler = LocalUriHandler.current

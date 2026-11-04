@@ -208,3 +208,19 @@ ICHUCHU_LIVE_DECK_PROJECT="$PWD/.plans/live-codex-project" \
 nix develop --command bash -c \
   'cd android && ./gradlew :app:testDebugUnitTest --tests "*LiveCodexTest" --rerun-tasks'
 ```
+
+Add `ICHUCHU_LIVE_MODEL_CONTROL=1` to also change reasoning and model between the
+two requests. This checks `gpt-6.1-sol / low` and `gpt-6-luna / high` against each
+native `turn_context`, requires the same conversation ID, and compares the Codex
+global configuration before/after. Both models must be available to the account.
+The remote controller's refusal/parser tests also run in the ordinary JVM suite
+through Python 3; they do not access real sessions.
+
+The model-menu UI case in `AgentModeTest` uses synthetic settings over real SSH,
+preserves a composed draft, reopens the selected settings, and compares the chat
+and input bounds before/after with the actual IME visible. `AgentMemoryCitationTest`
+and `AgentChatScrollTest` cover collapsed/expanded sources and long source paths.
+For the 320dp/200% pass, set the disposable emulator's system `font_scale` to `2.0`
+as well as passing `-e agentFontScale 2.0`: popup/dialog windows can use the system
+density rather than the test's composition-local override. Restore `font_scale`
+to `1.0` before ordinary acceptance.

@@ -108,6 +108,40 @@ class DeckClient(
             .filterNot { it.raw.flag("archived") }
     }
 
+    /** Control commands never enter the message queue or its accepted-turn ledger. */
+    suspend fun modelSettings(
+        id: String,
+        model: String = "",
+        effort: String = "",
+    ): DeckModelOptions {
+        val script =
+            checkNotNull(javaClass.getResourceAsStream("/agent_model_control.py")) {
+                    "Model controls are missing from this build"
+                }
+                .bufferedReader()
+                .use { it.readText() }
+        val command =
+            "exec python3 -c " +
+                (listOf(script, executable, profile, id, model, effort)).joinToString(
+                    " ",
+                    transform = DeckCommands::quote,
+                )
+        val result = transport.execute(command, timeoutMs = 35_000)
+        requireSuccess(result)
+        val value = parseDeckObject(result.stdout)
+        if (model.isNotEmpty() || effort.isNotEmpty()) {
+            check(value.flag("confirmed")) {
+                "Model change is unconfirmed. Check the terminal before trying again."
+            }
+        }
+        return DeckModelOptions(
+            DeckModelSettings(value.text("model"), value.text("effort")),
+            (value["models"] as? JsonObject).orEmpty().mapValues { (_, levels) ->
+                (levels as? JsonArray).orEmpty().mapNotNull { (it as? JsonPrimitive)?.content }
+            },
+        )
+    }
+
     suspend fun timeline(id: String, before: String? = null): DeckTimeline {
         val window =
             if (before == null) {

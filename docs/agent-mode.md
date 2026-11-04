@@ -20,11 +20,36 @@ terminal. Deck sessions owned by a different SSH host must be opened through a
 connection to that host; the app does not forward prompts through Deck proxies.
 
 Ordinary prompts use native chat. Permissions, trust/login screens, interactive
-questions and model/account menus use **Open this session in terminal** (`>_`).
+questions and account menus use **⋯ → Open terminal** in the chat header.
 The app invokes `agent-deck -p PROFILE session attach FULL_ID`: Deck resolves the
 session's saved tmux socket. It does not create an outer tmux session or guess a
 socket/session name. There are no native Approve/Allow buttons or a misleading
 Stop button that kills the entire agent process.
+
+**⋯ → Model & reasoning** changes an idle conversation's model without adding a
+toolbar row or shrinking the composer. Codex supports model-only, reasoning-only
+and combined changes; **default** selects the chosen model's default reasoning.
+The change applies to the next message and keeps the conversation and draft.
+Memory citations in assistant replies appear as an expandable **Memory sources**
+row, with source paths, line numbers and notes. Code examples and user messages
+stay literal; the stored transcript is unchanged.
+
+In-session Codex controls currently support **Codex 0.166.x**, Python 3 and the
+standard Codex model/context footer on the `agent-deck` tmux socket. The controller
+checks the exact session identity and pane, shares Deck 1.16.36's send lock, and
+refuses active turns, queued deliveries, terminal drafts and open menus. It sends
+one session-only `/model` command and requires both Codex's acknowledgement and
+the updated footer; it never retries a control automatically. Models and supported
+reasoning levels come from that session's Codex model cache, rather than Deck's
+older launch catalog. General Codex defaults are unchanged. Other versions,
+custom footers/sockets and unsupported states retain **Open terminal**.
+Ultra is excluded from the in-app choices: Deck 1.16.36 does not recognize its
+`»` composer for guarded message delivery. Use the terminal for Ultra; the app
+can read that mode and switch back to a supported reasoning level.
+
+Claude model changes use Deck's guarded `session command /model` operation.
+Claude reasoning still uses its terminal. When an SSH result is lost, inspect the
+terminal and read the current settings before applying again.
 
 The session list and chat always use SSH commands without a PTY. Choosing Mosh
 for the server applies to the optional terminal, including its existing UDP

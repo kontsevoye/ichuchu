@@ -11,6 +11,10 @@ import kotlinx.serialization.json.jsonObject
 
 internal val deckJson = Json { ignoreUnknownKeys = true }
 
+data class DeckModelSettings(val model: String = "", val effort: String = "")
+
+data class DeckModelOptions(val current: DeckModelSettings, val models: Map<String, List<String>>)
+
 internal fun JsonObject.text(key: String): String =
     (get(key) as? JsonPrimitive)?.contentOrNull.orEmpty()
 

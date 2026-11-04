@@ -148,6 +148,11 @@ of device, server and input has been exhausted.
 - [ ] AGENT-13 Denied notification permission still permits normal foreground use.
 - [ ] AGENT-14 Real installed Codex: a fresh welcome-logo session accepts the first message exactly once, receives a provider response, binds history automatically and reopens it; the second message also lands once.
 - [ ] AGENT-15 Verify the actual launcher mode and hooks, including shared app-server compatibility; synthetic fixtures do not satisfy live Codex acceptance.
+- [ ] AGENT-16 Change model only, reasoning only, both and model default within one real Codex conversation; verify the next native turn context, unchanged conversation ID and global defaults.
+- [ ] AGENT-17 Model controls refuse busy turns, queued sends, menus and existing terminal drafts (including text equal to the empty placeholder); no cancellation or message is submitted.
+- [ ] AGENT-18 Current model/effort, per-model choices, stale/missing catalogs, unsupported versions, invalid pairs and unavailable models give accurate states.
+- [ ] AGENT-19 Same-value Apply, rapid taps, Close/Back, session switching, offline and lost-control responses never report unconfirmed success or replay a control.
+- [ ] AGENT-20 Session options and model dialogs remain reachable at 320dp/200% with IME; closing preserves chat/composer dimensions, draft, attachments and scroll position.
 
 ## Agent chat, drafts and attachments
 
@@ -169,6 +174,8 @@ of device, server and input has been exhausted.
 - [ ] CHAT-16 Cancel/remove/re-add/reconnect retains only intended attachments.
 - [ ] CHAT-17 Attachment-only send, text+files and failed send preserve recoverable state.
 - [ ] CHAT-18 Send/remove and one readable history line remain visible at 320dp/200% with IME.
+- [ ] CHAT-19 Complete/streaming/multiple memory citations collapse to readable sources; long paths, notes and Unicode expand without losing the answer or changing cached text.
+- [ ] CHAT-20 Citation-like text inside user messages, code fences, inline code, quotes, malformed or oversized blocks remains literal and inert.
 
 ## Settings, appearance and custom actions
 

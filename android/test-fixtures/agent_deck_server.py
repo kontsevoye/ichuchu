@@ -38,6 +38,7 @@ RECALL = True
 DROP_NEXT_LIST = False
 EVENTS = []
 UPLOADS = {}
+MODEL_SETTINGS = {}
 
 
 def encoded(value):
@@ -68,6 +69,24 @@ def process(channel, command):
     global RECALL, DROP_NEXT_LIST
     channel.settimeout(15)
     upload = shlex.split(command)
+    if upload[:1] == ["fixture-model-reset"]:
+        with LOCK:
+            MODEL_SETTINGS.pop(upload[1], None)
+        channel.sendall(b"reset\n")
+        return 0
+    if upload[:3] == ["exec", "python3", "-c"] and upload[3].startswith("# ichuchu-model-control-v1\n"):
+        assert len(upload) == 9
+        session, model, effort = upload[6:]
+        with LOCK:
+            current = MODEL_SETTINGS.get(session, ("fixture-model", "medium"))
+            if model or effort:
+                current = (model or current[0], effort or "low")
+                MODEL_SETTINGS[session] = current
+        channel.sendall(encoded({"success": True, "confirmed": bool(model or effort),
+                                "model": current[0], "effort": current[1],
+                                "models": {"fixture-model": ["medium", "high"],
+                                           "fixture-second-model": ["low", "high"]}}))
+        return 0
     if upload[:1] == ["fixture-queue-seed"]:
         ident = "pending-" + upload[1]
         with LOCK:

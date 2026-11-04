@@ -27,6 +27,7 @@ import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.swipeDown
 import androidx.compose.ui.test.swipeRight
@@ -61,6 +62,34 @@ class AgentChatScrollTest {
     private var keyboard: SoftwareKeyboardController? = null
     private var imeBottom = 0
     private var ui by mutableStateOf(AgentUiState())
+
+    @Test
+    fun memorySourcesExpandAndCollapseInsideTheRealChat() {
+        val location =
+            "rollout_summaries/2026-11-03T16-48-46-vwTp-chuchu_agent_session_recovery_v073.md:30–39"
+        show(
+            """Finished the session.
+<oai-mem-citation>
+<citation_entries>
+MEMORY.md:116-119|note=[guarded sending and release verification workflow]
+${location.replace('–', '-')}|note=[prior identity recovery and fixture coverage limits]
+</citation_entries>
+<rollout_ids>
+01a1a250-2f3b-7e02-b336-177b8651f373
+</rollout_ids>
+</oai-mem-citation>"""
+        )
+        atEnd()
+        compose.onNodeWithText("<oai-mem-citation>", substring = true).assertDoesNotExist()
+        compose.onNodeWithContentDescription("Memory sources · 2").performClick()
+        compose.onNodeWithText(location).performScrollTo().assertIsDisplayed()
+        capture("chat-memory-expanded")
+        compose.onNodeWithContentDescription("Memory sources · 2").performScrollTo().performClick()
+        compose.onNodeWithText(location).assertDoesNotExist()
+        if (list.canScrollForward) compose.onNodeWithText("↓ latest").performClick()
+        atEnd()
+        capture("chat-memory-collapsed")
+    }
 
     private fun row(id: Int, body: String = "Message $id. " + "Synthetic chat text. ".repeat(6)) =
         DeckRow(

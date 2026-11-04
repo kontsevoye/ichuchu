@@ -372,6 +372,7 @@ internal class FakeDeckTransport(private val guard: Boolean = true) : DeckTransp
     var stdin: ByteArray? = null
     var command = ""
     var mutations = 0
+    var executions = 0
 
     override suspend fun execute(
         command: String,
@@ -380,6 +381,7 @@ internal class FakeDeckTransport(private val guard: Boolean = true) : DeckTransp
         onStarted: suspend () -> Unit,
     ): DeckExecResult {
         this.command = command
+        executions++
         this.stdin = stdin
         if (command.contains("'send'") && !command.contains("'--help'")) mutations++
         onStarted()

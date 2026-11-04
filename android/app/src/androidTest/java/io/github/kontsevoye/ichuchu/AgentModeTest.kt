@@ -482,6 +482,7 @@ class AgentModeTest {
         try {
             val arguments = InstrumentationRegistry.getArguments()
             GhosttyThemeRegistry.init(app)
+            var imeBottom = 0
             compose.setContent {
                 val density = LocalDensity.current
                 CompositionLocalProvider(
@@ -491,6 +492,7 @@ class AgentModeTest {
                             arguments.getString("agentFontScale", "1.0").toFloat(),
                         )
                 ) {
+                    imeBottom = WindowInsets.ime.getBottom(LocalDensity.current)
                     IchuTheme(themeName = arguments.getString("agentTheme")) {
                         AgentScreen(vm, {}, {}, {})
                     }
@@ -505,7 +507,58 @@ class AgentModeTest {
             capture("agent-chat")
             val prompt = "Synthetic UI request 世界 ${java.util.UUID.randomUUID()}"
             compose.onAllNodes(hasSetTextAction()).onLast().performTextInput(prompt)
+            compose.onAllNodes(hasSetTextAction()).onLast().performClick()
+            compose.waitUntil(5_000) { imeBottom > 0 }
             capture("agent-chat-composing")
+            SystemClock.sleep(500)
+            val historyBounds =
+                compose.onNodeWithTag("agent_chat_history").fetchSemanticsNode().boundsInRoot
+            val inputBounds =
+                compose.onAllNodes(hasSetTextAction()).onLast().fetchSemanticsNode().boundsInRoot
+            runBlocking {
+                val control = transport()
+                try {
+                    control.execute("fixture-model-reset fixture-existing-full-id")
+                } finally {
+                    control.interrupt()
+                }
+            }
+            compose.onNodeWithContentDescription("Session options").performClick()
+            capture("agent-session-options")
+            compose.onNodeWithText("Model & reasoning").performClick()
+            compose.waitUntil(15_000) { vm.state.value.modelSettings?.loading == false }
+            assertEquals(null, vm.state.value.modelSettings?.error)
+            compose.onNodeWithText("Apply").assertIsNotEnabled()
+            capture("agent-model-settings")
+            compose.onNodeWithText("fixture-model  ▾").performClick()
+            compose.onNodeWithText("○ fixture-second-model").performClick()
+            assertEquals("", vm.state.value.modelSettings?.choice?.effort)
+            compose.onNodeWithText("default  ▾").performClick()
+            compose.onNodeWithText("○ high").performClick()
+            capture("agent-model-choice")
+            compose.onNodeWithText("Apply").performClick()
+            compose.waitUntil(15_000) {
+                vm.state.value.modelSettings == null && !vm.state.value.changingModel
+            }
+            assertEquals(prompt, vm.state.value.chat.draft)
+            assertTrue(vm.state.value.chat.timeline.rows.none { "/model" in it.body })
+            compose.onAllNodes(hasSetTextAction()).onLast().performClick()
+            compose.waitUntil(5_000) { imeBottom > 0 }
+            SystemClock.sleep(700)
+            assertEquals(
+                historyBounds,
+                compose.onNodeWithTag("agent_chat_history").fetchSemanticsNode().boundsInRoot,
+            )
+            assertEquals(
+                inputBounds,
+                compose.onAllNodes(hasSetTextAction()).onLast().fetchSemanticsNode().boundsInRoot,
+            )
+            compose.onNodeWithContentDescription("Session options").performClick()
+            compose.onNodeWithText("Model & reasoning").performClick()
+            compose.waitUntil(15_000) { vm.state.value.modelSettings?.loading == false }
+            assertEquals("fixture-second-model", vm.state.value.modelSettings?.current?.model)
+            assertEquals("high", vm.state.value.modelSettings?.current?.effort)
+            compose.onNodeWithText("Close").performClick()
             compose.onNodeWithText("send ↑").assertIsDisplayed().performClick()
             compose.waitUntil(20_000) {
                 vm.state.value.chat.timeline.rows.any { it.body == prompt } &&
