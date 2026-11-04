@@ -44,8 +44,18 @@ A fresh agent may have no transcript until its first request. This is a stable
 empty chat, with the composer available as soon as the agent is ready. The app
 checks quietly for the first transcript instead of repeatedly showing a loader.
 
-Some Codex launchers (including remote processes that do not hold a local rollout
-file) leave Deck without a native conversation ID. **Choose existing history**
+Codex sessions need an exact native conversation ID from their process or hooks.
+With Codex 0.166, `--remote unix://` does not forward a frontend's `notify` override
+to the shared app-server. Such a frontend also does not own its rollout file, so
+Deck cannot discover the ID through its process. For Agent Deck launches, use an
+embedded Codex server with the existing profile and per-session notify callback;
+keep shared-server mode for other launches if desired. A named profile (for example
+`codex --profile PROFILE`) selects the embedded path; do not add `--remote` to it.
+Preserve any existing notification callback when composing the Deck callback.
+Verify a real first response, `codex_session_id`, and `recall timeline DECK_ID`;
+a successful send alone does not prove that history is connected.
+
+For older sessions that already lost their binding, **Choose existing history**
 lists indexed Codex conversations in the exact project. Select the correct title,
 date and native ID, then confirm **Link selected history**. The app verifies that
 native history is readable and saves `codex-session-id` on the selected Deck
@@ -126,8 +136,10 @@ Identical prompt text is not a deduplication key.
 
 A Codex session without a native conversation ID uses Deck's guarded composer
 fallback when the host advertises it. Deck's queue worker does not forward this
-option, so this send runs directly with a bounded wait for the agent to become
-idle. An explicit `submitted` confirmation is shown as **submitted to agent**;
+option, so this send runs directly with `--no-wait --require-input-prompt`.
+Deck 1.16.36 can classify the Codex 0.166 welcome logo as a busy spinner; waiting
+on that status prevents the first message indefinitely. The input-prompt guard
+still refuses a live turn or menu under Deck's send lock before typing. An explicit `submitted` confirmation is shown as **submitted to agent**;
 it does not invent a transcript row or bind history by project directory.
 Busy or interactive sessions are not interrupted. Established Codex sessions
 and Claude continue to use the durable queue.

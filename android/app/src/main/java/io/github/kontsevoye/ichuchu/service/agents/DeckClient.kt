@@ -91,7 +91,7 @@ class DeckClient(
                 },
                 fields,
                 events,
-                listOf("codex-composer-fallback", "defer-if-busy", "defer-timeout", "timeout").all {
+                listOf("codex-composer-fallback", "no-wait", "timeout").all {
                     help.contains("-$it")
                 },
             )
@@ -221,7 +221,9 @@ class DeckClient(
         }
         // Deck's queue worker drops --codex-composer-fallback. A fresh/remote Codex has no
         // rollout identity yet, so use its public guarded composer path for this one send.
-        // --defer-if-busy disables implicit JSON queueing and waits without interrupting a turn.
+        // Deck 1.16.36 mistakes Codex 0.166 welcome artwork for a busy spinner.
+        // Bypass that status wait; --require-input-prompt still rejects live turns and menus
+        // under Deck's send lock before typing. Never retry a possibly submitted message.
         val result =
             transport.execute(
                 command(
@@ -233,9 +235,7 @@ class DeckClient(
                         "-",
                         "--json",
                         "--codex-composer-fallback",
-                        "--defer-if-busy",
-                        "--defer-timeout",
-                        "15s",
+                        "--no-wait",
                         "--timeout",
                         "10s",
                         "--require-input-prompt",

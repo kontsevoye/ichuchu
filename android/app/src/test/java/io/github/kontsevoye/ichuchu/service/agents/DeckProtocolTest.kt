@@ -276,7 +276,7 @@ class DeckProtocolTest {
     }
 
     @Test
-    fun freshCodexUsesGuardedComposerInsteadOfAnUndeliverableQueue() = runBlocking {
+    fun freshCodexWithLogoReportedBusyUsesTheGuardedComposer() = runBlocking {
         val wire = FakeDeckTransport()
         val client = DeckClient(wire, "default", "agent-deck")
         client.probe()
@@ -288,14 +288,14 @@ class DeckProtocolTest {
             )
         val receipt =
             client.send(
-                DeckSession(json("""{"id":"fresh","tool":"codex","status":"waiting"}""")),
+                DeckSession(json("""{"id":"fresh","tool":"codex","status":"running"}""")),
                 "first request",
             ) {}
         assertTrue(wire.command.contains("'--codex-composer-fallback'"))
-        assertTrue(wire.command.contains("'--defer-if-busy'"))
+        assertFalse(wire.command.contains("'--defer-if-busy'"))
         assertTrue(wire.command.contains("'--require-input-prompt'"))
         assertFalse(wire.command.contains("'--queue'"))
-        assertFalse(wire.command.contains("'--no-wait'"))
+        assertTrue(wire.command.contains("'--no-wait'"))
         assertEquals(1, wire.mutations)
         val send = DeckSend("local", "first request", receipt)
         assertEquals("submitted", send.state)
@@ -395,7 +395,7 @@ internal class FakeDeckTransport(private val guard: Boolean = true) : DeckTransp
                     """{"version":1,"commands":{"launch":[{"name":"no-parent"},{"name":"title"},{"name":"model"},{"name":"group"}]},"tools":[{"name":"claude","models":["fixture-model"]},{"name":"codex","models":null}],"accounts":[]}"""
                 command.contains("'--help'") ->
                     if (guard) {
-                        "-require-input-prompt -queue -message-file -no-tag -json -codex-composer-fallback -defer-if-busy -defer-timeout -timeout"
+                        "-require-input-prompt -queue -message-file -no-tag -json -codex-composer-fallback -no-wait -defer-if-busy -defer-timeout -timeout"
                     } else {
                         "-message-file -json"
                     }

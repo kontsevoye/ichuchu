@@ -184,3 +184,27 @@ command traverses the real SSH PTY and Mosh UDP startup paths and reconnects to
 the same shell state. It does not claim to run a provider or the complete real
 Deck CLI. Run it with `-e tmuxFixture true` as above; cleanup removes only the
 fixture's two tmux sockets and tracked processes.
+
+### Live Codex acceptance
+
+`LiveCodexTest` is opt-in and calls the real installed Deck and authenticated Codex
+through the Android client's command boundary. It creates a session, sends two
+small provider requests, verifies one native user row per request and the actual
+responses, and reopens persisted history by Deck ID without manually linking it.
+Its `finally` block removes only the session it created. It does not replace the
+Android SSH/UI tests or physical-device acceptance.
+
+Use an otherwise disposable profile named `ichuchu-liveqa-*` and a trusted test
+project under ignored `.plans/`. Give that project an `AGENTS.md` that restricts it
+to answering messages without tools or file changes. The host must already have
+Recall, authentication, and the intended Codex launcher configured; see
+[Agent mode](../../docs/agent-mode.md) for shared app-server limitations. The test
+does not install hooks, change provider permissions, or repair host settings.
+
+```sh
+ICHUCHU_LIVE_DECK="$(command -v agent-deck)" \
+ICHUCHU_LIVE_DECK_PROFILE=ichuchu-liveqa-local \
+ICHUCHU_LIVE_DECK_PROJECT="$PWD/.plans/live-codex-project" \
+nix develop --command bash -c \
+  'cd android && ./gradlew :app:testDebugUnitTest --tests "*LiveCodexTest" --rerun-tasks'
+```

@@ -1,6 +1,7 @@
 # Application QA checklist
 
-Use synthetic profiles, keys, files and agent sessions on a disposable emulator.
+Use synthetic profiles, keys and files on a disposable emulator. Live-agent
+acceptance uses separately created QA sessions and the actual configured launcher.
 Never run destructive cases against a personal host or clear a user's app data.
 See [test fixtures](../android/test-fixtures/README.md), [updater acceptance](updating.md)
 and [release verification](releasing.md) for reproducible commands.
@@ -140,11 +141,13 @@ of device, server and input has been exhausted.
 - [ ] AGENT-06 Queued launch explains the slot limit and preserves an editable draft.
 - [ ] AGENT-07 Repeated Create/Send taps cannot duplicate a request.
 - [ ] AGENT-08 First message in a new empty/unlinked session is sent once or clearly refused.
-- [ ] AGENT-09 Codex history links only after explicit selection of the exact identity.
+- [ ] AGENT-09 Exact native history loads automatically when Deck supplies its identity; manual recovery requires explicit selection, never directory-based guessing.
 - [ ] AGENT-10 Opening terminal attaches to the exact chosen session and socket.
 - [ ] AGENT-11 Connect/disconnect/back/rapid reconnect retains correct ownership.
 - [ ] AGENT-12 Background status notifications deduplicate and open the exact chat.
 - [ ] AGENT-13 Denied notification permission still permits normal foreground use.
+- [ ] AGENT-14 Real installed Codex: a fresh welcome-logo session accepts the first message exactly once, receives a provider response, binds history automatically and reopens it; the second message also lands once.
+- [ ] AGENT-15 Verify the actual launcher mode and hooks, including shared app-server compatibility; synthetic fixtures do not satisfy live Codex acceptance.
 
 ## Agent chat, drafts and attachments
 

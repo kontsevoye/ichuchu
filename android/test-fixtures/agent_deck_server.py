@@ -180,7 +180,7 @@ def process(channel, command):
     elif args[:2] == ["harness", "list"]:
         output = [{"name": name, "installed": True, "state": "ready"} for name in ["claude", "codex"]]
     elif args[:3] == ["session", "send", "--help"]:
-        channel.sendall(b"-require-input-prompt -queue -message-file -no-tag -json -codex-composer-fallback -defer-if-busy -defer-timeout -timeout\n")
+        channel.sendall(b"-require-input-prompt -queue -message-file -no-tag -json -codex-composer-fallback -no-wait -defer-if-busy -defer-timeout -timeout\n")
         return 0
     elif args[:2] == ["config", "get"]:
         output = {"key": "recall.enabled", "value": RECALL}
@@ -251,7 +251,7 @@ def process(channel, command):
             session = next(s for s in SESSIONS if s["id"] == args[2])
             if session["tool"] == "codex" and not session.get("codex_session_id"):
                 # The real Deck queue worker does not forward --codex-composer-fallback.
-                if "--queue" in args or "--defer-if-busy" not in args or "--codex-composer-fallback" not in args:
+                if "--queue" in args or "--no-wait" not in args or "--codex-composer-fallback" not in args:
                     output.update(state="failed", landed_row_id="", reason="Codex session identity is unavailable; nothing was typed")
                     SENDS[ident] = output
                     channel.sendall(encoded(dict(output, state="queued")))
