@@ -582,6 +582,21 @@ private fun ColumnScope.AgentSessions(
                                     style = type.bodySmall,
                                     color = statusColor(session.status),
                                 )
+                                state.sessionModels[session.id]?.let { model ->
+                                    IchuText(
+                                        listOf(model.model, model.effort)
+                                            .filter { it.isNotBlank() }
+                                            .joinToString(" · "),
+                                        style = type.bodySmall,
+                                        color = colors.textSecondary,
+                                        modifier =
+                                            Modifier.testTag("agent_session_model_${session.id}")
+                                                .semantics {
+                                                    contentDescription =
+                                                        "Model: ${model.model}, reasoning: ${model.effort.ifBlank { "unknown" }}"
+                                                },
+                                    )
+                                }
                                 if (session.detail.isNotBlank()) {
                                     IchuText(
                                         session.detail,

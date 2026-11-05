@@ -9,6 +9,32 @@ import org.junit.Test
 
 class AgentModelControlTest {
     @Test
+    fun sessionModelsUseOneReadAndOmitUnknownSettings() = runBlocking {
+        val fake = FakeDeckTransport()
+        val client = DeckClient(fake, "default", "")
+        client.probe()
+        val calls = fake.executions
+        fake.reply =
+            DeckExecResult(
+                """{"success":true,"sessions":[{"id":"a","model":"gpt-6.1-sol","effort":"high"},{"id":"b","model":"gpt-6-astra","effort":"max"},{"id":"unknown","model":""}]}""",
+                "",
+                0,
+            )
+        assertEquals(
+            mapOf(
+                "a" to DeckModelSettings("gpt-6.1-sol", "high"),
+                "b" to DeckModelSettings("gpt-6-astra", "max"),
+            ),
+            client.sessionModels(),
+        )
+        assertTrue(fake.command.contains("'--models'"))
+        assertEquals(calls + 1, fake.executions)
+        assertEquals(0, fake.mutations)
+        fake.reply = DeckExecResult("""{"success":true,"sessions":[]}""", "", 0)
+        assertEquals(emptyMap<String, DeckModelSettings>(), client.sessionModels())
+    }
+
+    @Test
     fun unconfirmedControlIsNotReportedAsAppliedOrReplayed() = runBlocking {
         val fake = FakeDeckTransport()
         val client = DeckClient(fake, "default", "")

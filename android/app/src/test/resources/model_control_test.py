@@ -10,6 +10,45 @@ FRAME = 'Answer\n\n› \x1b[2mAsk Codex to do anything\x1b[0m\n\n  GPT-6.1-Sol h
 
 
 class GuardTest(unittest.TestCase):
+    def test_batch_observes_live_settings_without_input_or_launch_defaults(self):
+        def session(ident, **kwargs):
+            return dict(id=ident, tool='codex', tmux_session=ident,
+                        model='stale-launch-model', **kwargs)
+
+        sessions = [session('ready'), session('gone'), session('wrong-owner'), session('unknown'),
+                    session('busy'), session('draft'), session('stopped', status='stopped'),
+                    session('remote', ssh_host='other'), session('cached', status_source='cached')]
+        calls = []
+
+        def run(args, timeout=8):
+            calls.append(args)
+            if 'list' in args:
+                return json.dumps(sessions)
+            if '--version' in args:
+                return 'codex-cli 0.166.0'
+            if 'show-environment' in args:
+                ident = args[args.index('-t') + 1][1:]
+                if ident == 'gone':
+                    raise control.Refused('Terminal gone')
+                return 'AGENTDECK_INSTANCE_ID=' + ('other' if ident == 'wrong-owner' else ident)
+            if 'list-panes' in args:
+                return '%' + args[args.index('-t') + 1][1:] + ' 123 0'
+            if 'display-message' in args:
+                return '123 0'
+            if 'capture-pane' in args:
+                ident = args[-1][1:]
+                return dict(unknown='shell $', busy=FRAME.replace('Answer', 'Working (esc to interrupt)'),
+                            draft=FRAME.replace('Ask Codex to do anything', 'unsent draft')).get(ident, FRAME)
+            raise AssertionError('Unexpected mutation or command: ' + str(args))
+
+        with patch.object(control, 'run', side_effect=run), \
+                patch.object(control.shutil, 'which', return_value='codex'):
+            result = control.session_models('deck', 'qa')
+        self.assertEqual([dict(id=ident, model='gpt-6.1-sol', effort='high')
+                          for ident in ('ready', 'busy', 'draft')], result['sessions'])
+        self.assertEqual(1, sum('list' in args for args in calls))
+        self.assertEqual(1, sum('--version' in args for args in calls))
+
     def test_acknowledgement_before_footer_settles_never_resubmits(self):
         phase = 'idle'
         captures = 0
@@ -138,6 +177,45 @@ class GuardTest(unittest.TestCase):
 
 
 class NativeInputTest(unittest.TestCase):
+    def test_pending_receipt_can_find_its_row_before_the_latest_tool_page(self):
+        recent = dict(returncode=0, stdout=json.dumps(dict(turns=[dict(id='tool', ts='1970-01-01T00:17:00Z')], before_cursor='older')))
+        old = dict(returncode=0, stdout=json.dumps(dict(turns=[dict(id='canonical-user', ts='1970-01-01T00:16:40Z')], before_cursor='oldest')))
+        before = dict(returncode=0, stdout=json.dumps(dict(turns=[dict(id='before-send', ts='1970-01-01T00:15:00Z')], before_cursor='unused')))
+        results = [type('Result', (), page)() for page in [recent, old, before]]
+        with patch.object(control.subprocess, 'run', side_effect=results) as read:
+            rows = control.native_rows(['deck'], 'qa', since=1000)
+        self.assertIn('canonical-user', [row['id'] for row in rows])
+        self.assertEqual(3, read.call_count)
+        self.assertIn('--before', read.call_args_list[1].args[0])
+
+    def test_small_viewport_is_restored_before_enter_even_on_verification_failure(self):
+        calls = []
+        def run(args, timeout=8):
+            calls.append(args)
+            if 'display-message' in args:
+                return '@9 46 21'
+            return ''
+        with patch.object(control, 'run', side_effect=run), patch.object(control.time, 'sleep'):
+            with self.assertRaisesRegex(control.Refused, 'changed'):
+                with control.send_viewport(['tmux'], '%1', 'some text\n' * 50):
+                    raise control.Refused('changed')
+        resize = [args for args in calls if 'resize-window' in args]
+        self.assertEqual(2, len(resize))
+        self.assertGreater(int(resize[0][-1]), 21)
+        self.assertEqual('21', resize[-1][-1])
+        self.assertIn('set-option', calls[-1])
+        self.assertIn('-u', calls[-1])
+        self.assertFalse(any('send-keys' in args for args in calls))
+
+    def test_receipt_history_falls_back_to_the_same_sessions_exact_native_id(self):
+        missing = type('Result', (), dict(returncode=1, stdout=json.dumps(dict(code='NOT_FOUND'))))()
+        actual = type('Result', (), dict(returncode=0, stdout=json.dumps(dict(turns=[dict(id='canonical-user')]))))()
+        session = dict(id='qa', tool='codex', codex_session_id='native-exact-identity')
+        with patch.object(control.subprocess, 'run', side_effect=[missing, actual]) as read, \
+                patch.object(control, 'run', return_value=json.dumps(session)):
+            self.assertEqual([dict(id='canonical-user')], control.native_rows(['deck'], 'qa'))
+        self.assertIn('native-exact-identity', read.call_args_list[-1].args[0])
+
     def test_shared_backend_shortcuts_are_not_an_open_menu(self):
         for hint in ['← for agents · ? for shortcuts',
                      '← for agents · ? for shortcuts     ⚠ 2 · f2',
@@ -157,6 +235,7 @@ class NativeInputTest(unittest.TestCase):
         message = 'hello'
         captures = iter([frame, frame, frame.replace('Ask Codex to do anything', message), frame])
         with patch.object(control, 'native_rows', return_value=[]), \
+                patch.object(control, 'send_viewport', return_value=nullcontext(False)), \
                 patch.object(control, 'run', return_value='[]') as run, \
                 patch.object(control.subprocess, 'run'), patch.object(control.time, 'sleep'):
             receipt = control.native_send({'id': 'qa'}, [], [], '%1', '123', lambda: next(captures), message)
@@ -249,6 +328,7 @@ class NativeInputTest(unittest.TestCase):
             commands.append(args)
             return '{"queue": []}' if 'queue' in args else ''
         with patch.object(control, 'run', side_effect=run), patch.object(control, 'native_rows', return_value=[]), \
+                patch.object(control, 'send_viewport', return_value=nullcontext(False)), \
                 patch.object(control.subprocess, 'run') as process, patch.object(control.time, 'sleep'):
             result = control.native_send(dict(id='qa', codex_session_id='native'), [], ['tmux'], '%1', '123', lambda: next(captures), message)
         self.assertEqual('submitted', result['state'])
@@ -262,6 +342,7 @@ class NativeInputTest(unittest.TestCase):
     def test_changed_draft_after_paste_never_presses_enter_or_clears_input(self):
         captures = iter([FRAME, FRAME, FRAME.replace('Ask Codex to do anything', 'unexpected edit')])
         with patch.object(control, 'run', return_value='{"queue": []}') as run, \
+                patch.object(control, 'send_viewport', return_value=nullcontext(False)), \
                 patch.object(control, 'native_rows', return_value=[]), patch.object(control.subprocess, 'run'), \
                 patch.object(control.time, 'sleep'):
             result = control.native_send(dict(id='qa'), [], ['tmux'], '%1', '123', lambda: next(captures), 'our message')

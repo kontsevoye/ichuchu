@@ -58,6 +58,11 @@ terminal and read the current settings before applying again.
 
 For Codex, the current **model**, **reasoning level** and **N%** remaining context
 appear together above the message field, including while the keyboard is open.
+The session list also shows the current model and reasoning below each live
+Codex session's status. A single read-only host request refreshes these values
+while the list is open; opening each chat is unnecessary. Unreadable or stopped
+sessions omit the values, and disconnect clears them. Saved launch defaults are
+never shown as current settings.
 The model and reasoning come from the live terminal footer, so changes made
 through `/model` are reflected too. Long model names shorten on narrow screens
 while reasoning and the percentage remain visible. The app reads Codex's own
@@ -97,6 +102,13 @@ keep shared-server mode for other launches if desired. A named profile (for exam
 Preserve any existing notification callback when composing the Deck callback.
 Verify a real first response, `codex_session_id`, and `recall timeline DECK_ID`;
 a successful send alone does not prove that history is connected.
+
+Deck 1.16.36 can also expose the correct live `codex_session_id` in `session show`
+while `recall timeline DECK_ID` still reports no transcript. In that case the app
+reads and follows that exact native ID, using the same source for delivery
+receipts. It rechecks the identity before renewing the stream and resynchronizes
+if it changes. This recovery does not change a saved binding or select a sibling
+conversation by project.
 
 For older sessions that already lost their binding, **Choose existing history**
 lists indexed Codex conversations in the exact project. Select the correct title,
@@ -180,12 +192,18 @@ budget can expire after 30 minutes without a typing attempt.
 
 The controller checks the exact session, live pane and empty composer before
 typing, then verifies the pasted input. Existing drafts, menus, unknown composer
-states and older pending Deck queue entries refuse delivery. Native slash/shell
+states and older pending Deck queue entries refuse delivery. Short multiline
+pastes can scroll out of a small terminal's composer; verification temporarily
+expands that exact window and
+restores its height and sizing mode before sending Enter. A failed verification
+also restores the layout and leaves the text unsubmitted. Native slash/shell
 commands belong in the terminal. The app never clears an existing draft, sends
 Ctrl+C, repeats Enter or retries delivery automatically. An explicit native
 acceptance is shown as **submitted to Codex**. Only a fresh, uniquely matched
 canonical user-row ID completes reconciliation with history; older rows and
-identical text alone cannot confirm delivery. The app does not bind a conversation
+identical text alone cannot confirm delivery. Pending receipts inspect earlier
+pages when newer tools have pushed the request out of the latest history page.
+The app does not bind a conversation
 by project directory. Unsupported host versions retain the terminal fallback.
 
 A session marked **waiting to start** is queued behind its Deck group's

@@ -18,6 +18,24 @@ import org.junit.Test
 /** Opt-in acceptance against an installed Deck and authenticated, real Codex. */
 class LiveCodexTest {
     @Test
+    fun existingSessionHistoryReadOnly() = runBlocking {
+        val id = System.getenv("ICHUCHU_READONLY_DECK_SESSION").orEmpty()
+        assumeTrue("Read-only live history acceptance is opt-in", id.isNotBlank())
+        val client =
+            DeckClient(
+                LocalDeckTransport(),
+                System.getenv("ICHUCHU_READONLY_DECK_PROFILE") ?: "default",
+                System.getenv("ICHUCHU_READONLY_DECK") ?: "agent-deck",
+            )
+        client.probe()
+        val page = client.timeline(id)
+        assertTrue(page.rows.isNotEmpty())
+        assertTrue(page.rows.any { it.kind == "assistant" })
+        assertTrue(page.cursor?.isNotBlank() == true)
+        println("PASS read-only live Kotlin history: ${page.rows.size} canonical rows")
+    }
+
+    @Test
     fun firstSendAutomaticHistoryReopenAndSecondSend() = runBlocking {
         val executable = System.getenv("ICHUCHU_LIVE_DECK").orEmpty()
         val profile = System.getenv("ICHUCHU_LIVE_DECK_PROFILE").orEmpty()

@@ -470,6 +470,66 @@ class AgentModeTest {
     }
 
     @Test
+    fun exactNativeHistoryRapidReopenKeepsDraft() = runBlocking {
+        requireFixture()
+        val app =
+            InstrumentationRegistry.getInstrumentation().targetContext.applicationContext
+                as Application
+        val db = AppDatabase.getInstance(app)
+        val id =
+            db.hostProfileDao()
+                .insert(
+                    HostProfile(
+                        name = "Native history reopen fixture",
+                        host = "10.0.2.2",
+                        port = 22229,
+                        username = "deck-fixture",
+                        authMethod = AuthMethod.None,
+                        openMode = HostOpenMode.Agents,
+                        deckExecutable = "/fixture/agent-deck",
+                    )
+                )
+        val vm = AgentViewModel(app, id)
+        try {
+            compose.runOnIdle { vm.setForeground(true) }
+            compose.waitUntil(30_000) { vm.hostKeyPrompt.value != null || vm.state.value.online }
+            compose.runOnIdle { vm.respondToHostKey(true) }
+            compose.waitUntil(30_000) { vm.state.value.online }
+            compose.runOnIdle { vm.openSession("fixture-existing-full-id") }
+            compose.waitUntil(20_000) {
+                vm.state.value.chat.timeline.rows.isNotEmpty() && vm.state.value.live
+            }
+            compose.runOnIdle {
+                vm.disconnect()
+                vm.reconnect()
+            }
+            compose.waitUntil(30_000) { vm.state.value.online }
+            compose.runOnIdle {
+                repeat(12) { vm.updateDraft("Rapid draft $it") }
+                vm.back()
+                vm.openSession("fixture-existing-full-id")
+            }
+            try {
+                compose.waitUntil(10_000) {
+                    !vm.state.value.chatLoading && vm.state.value.chat.draft == "Rapid draft 11"
+                }
+            } catch (e: Exception) {
+                val state = vm.state.value
+                throw AssertionError(
+                    "Reopen: online=${state.online}, loading=${state.chatLoading}, draft=${state.chat.draft}, rows=${state.chat.timeline.rows.size}, live=${state.live}, error=${state.chatError ?: state.error}",
+                    e,
+                )
+            }
+        } finally {
+            compose.runOnIdle {
+                vm.disconnect()
+                vm.setForeground(false)
+            }
+            db.hostProfileDao().getById(id)?.let { db.hostProfileDao().deleteUnused(it) }
+        }
+    }
+
+    @Test
     fun compactUiLoadsHistorySendsAndKeepsOfflineDraft() {
         requireFixture()
         val app =
@@ -513,6 +573,15 @@ class AgentModeTest {
             compose.waitUntil(30_000) { vm.hostKeyPrompt.value != null || vm.state.value.online }
             compose.runOnIdle { vm.respondToHostKey(true) }
             compose.waitUntil(30_000) { vm.state.value.online }
+            compose.waitUntil(15_000) { "fixture-existing-full-id" in vm.state.value.sessionModels }
+            capture("agent-sessions-before-scroll")
+            compose
+                .onNodeWithTag(
+                    "agent_session_model_fixture-existing-full-id",
+                    useUnmergedTree = true,
+                )
+                .performScrollTo()
+                .assertIsDisplayed()
             capture("agent-sessions")
             runBlocking {
                 val control = transport()
@@ -524,6 +593,7 @@ class AgentModeTest {
             }
             compose.onNodeWithText("Fix draft recovery").performClick()
             compose.waitUntil(20_000) { vm.state.value.chat.timeline.rows.isNotEmpty() }
+            assertFalse(vm.state.value.historyMissing)
             compose.waitUntil(15_000) { vm.state.value.currentModel != null }
             compose
                 .onNodeWithContentDescription("Model: fixture-model, reasoning: medium")
@@ -564,6 +634,23 @@ class AgentModeTest {
             compose
                 .onNodeWithContentDescription("Model: fixture-second-model, reasoning: high")
                 .assertIsDisplayed()
+            compose.runOnIdle { vm.back() }
+            compose
+                .onNodeWithTag(
+                    "agent_session_model_fixture-existing-full-id",
+                    useUnmergedTree = true,
+                )
+                .assertContentDescriptionEquals("Model: fixture-second-model, reasoning: high")
+                .performScrollTo()
+                .assertIsDisplayed()
+            SystemClock.sleep(2500) // Let the model-change Toast clear the session card.
+            capture("agent-sessions-updated-model")
+            compose.runOnIdle { vm.openSession("fixture-existing-full-id") }
+            compose.waitUntil(15_000) {
+                !vm.state.value.chatLoading &&
+                    vm.state.value.chat.draft == prompt &&
+                    vm.state.value.currentModel != null
+            }
             assertEquals(prompt, vm.state.value.chat.draft)
             assertTrue(vm.state.value.chat.timeline.rows.none { "/model" in it.body })
             compose.onAllNodes(hasSetTextAction()).onLast().performClick()
@@ -606,6 +693,7 @@ class AgentModeTest {
             assertEquals("Keep this offline draft", vm.state.value.chat.draft)
             compose.runOnIdle { vm.disconnect() }
             compose.waitUntil { !vm.state.value.online }
+            assertTrue(vm.state.value.sessionModels.isEmpty())
             compose.onNodeWithText("Keep this offline draft").assertExists()
             compose.onNodeWithText("send ↑").assertIsNotEnabled()
             compose.runOnIdle { vm.reconnect() }
@@ -617,8 +705,16 @@ class AgentModeTest {
                 vm.back()
                 vm.openSession(existingId)
             }
-            compose.waitUntil(10_000) {
-                !vm.state.value.chatLoading && vm.state.value.chat.draft == "Rapid draft 11"
+            try {
+                compose.waitUntil(10_000) {
+                    !vm.state.value.chatLoading && vm.state.value.chat.draft == "Rapid draft 11"
+                }
+            } catch (e: Exception) {
+                val current = vm.state.value
+                throw AssertionError(
+                    "Reopen: online=${current.online}, loading=${current.chatLoading}, draft=${current.chat.draft}, rows=${current.chat.timeline.rows.size}, live=${current.live}, error=${current.chatError ?: current.error}",
+                    e,
+                )
             }
             compose.runOnIdle {
                 vm.back()

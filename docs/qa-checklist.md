@@ -185,6 +185,9 @@ of device, server and input has been exhausted.
 - [ ] CHAT-23 Reconnect, delayed indexing, repeated text, changed pane/thread and missing or ambiguous delivery evidence never invent a landed row or resend a request.
 - [ ] CHAT-24 Remaining context uses current native usage, handles 0/100/unknown/compaction and clears on navigation/disconnect; narrow footers fall back only to the exact conversation.
 - [ ] CHAT-25 Current model, reasoning and remaining context appear together above input, update after model changes, and clear on navigation/disconnect. Model names shorten before reasoning/percent; values and transient sending do not move history/input or overlap Send/attachment controls at 320dp/200% with IME.
+- [ ] CHAT-26 Session cards show live Codex model and reasoning before opening a chat, reflect a confirmed model change on return, and clear on disconnect. Unknown/stopped sessions do not show launch defaults. Verify wrapping at 320dp/200% font.
+- [ ] CHAT-27 When Deck-ID history returns NOT_FOUND but session show advertises an exact native ID, history/follow and old submitted receipts recover from that conversation without selecting another project's session or resending. Receipts can paginate past newer tool rows.
+- [ ] CHAT-28 At 46x21, a short multiline message with three attachments is verified fully and submitted once; terminal height and sizing mode are restored before Enter and on refusal. Existing user drafts remain untouched.
 - [ ] CHAT-26 Shared-backend `← for agents` shortcuts, with and without warnings, permit one native send and idle model controls; actual menus and drafts still refuse before typing.
 
 ## Settings, appearance and custom actions

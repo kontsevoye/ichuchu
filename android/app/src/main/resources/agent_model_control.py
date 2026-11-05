@@ -6,6 +6,7 @@ of Deck's accepted-turn protocol: control commands do not create a user turn.
 The shared Deck send flock serializes this operation with normal deliveries.
 """
 import fcntl
+from contextlib import contextmanager
 from datetime import datetime
 import hashlib
 import json
@@ -133,7 +134,7 @@ def available_models(session):
     return models
 
 
-def input_frame(frame, expected=None):
+def input_frame(frame, expected=None, verify_body=True):
     """Recognize Codex's ordinary composer even while a turn is running."""
     raw = frame.splitlines()
     rows = plain_frame(frame).splitlines()
@@ -150,6 +151,8 @@ def input_frame(frame, expected=None):
         raise Refused('Close the terminal menu before sending.')
     body = '\n'.join([rows[index][1:].strip()] + [line[2:].rstrip() if line.startswith('  ') else line.rstrip()
                      for line in rows[index + 1:footer]]).strip()
+    if not verify_body:
+        return rows[footer]
     if expected is None:
         if body and not (body == 'Ask Codex to do anything' and dim_placeholder(raw[index]) and
                          not any(line.strip() for line in rows[index + 1:footer])):
@@ -163,6 +166,42 @@ def input_frame(frame, expected=None):
         if not same and not (len(expected) > 1000 and pasted):
             raise Refused('The pasted message could not be verified. Check the terminal before trying again.')
     return rows[footer]
+
+
+@contextmanager
+def send_viewport(tmux, pane, message):
+    """Expose a short multiline paste fully, restoring layout before any Enter.
+
+    Codex collapses >1000 characters into a verified paste marker. Shorter text
+    can still scroll out of a phone-sized composer, leaving only its suffix.
+    """
+    if len(message) > 1000:
+        yield False
+        return
+    dimensions = run(tmux + ['display-message', '-p', '-t', pane,
+                             '#{window_id} #{window_width} #{window_height}']).strip().split()
+    if (len(dimensions) != 3 or not re.fullmatch(r'@\d+', dimensions[0]) or
+            any(not value.isdigit() for value in dimensions[1:])):
+        raise Refused('Cannot verify the terminal viewport. Open the terminal.')
+    window, width, height = dimensions[0], int(dimensions[1]), int(dimensions[2])
+    # Conservative cell bound includes wide Unicode, tabs, explicit lines and footer space.
+    required = len(message.splitlines()) + math.ceil(2 * len(message.expandtabs(8)) / max(1, width - 4)) + 12
+    if required <= height:
+        yield False
+        return
+    mode = run(tmux + ['show-options', '-w', '-v', '-t', window, 'window-size']).strip()
+    if mode not in ('', 'largest', 'smallest', 'manual', 'latest'):
+        raise Refused('Cannot preserve the terminal sizing mode. Open the terminal.')
+    try:
+        run(tmux + ['resize-window', '-t', window, '-y', str(min(2048, required))])
+        time.sleep(.15)
+        yield True
+    finally:
+        try:
+            run(tmux + ['resize-window', '-t', window, '-y', str(height)])
+        finally:
+            run(tmux + ['set-option', '-w'] + ([] if mode else ['-u']) +
+                ['-t', window, 'window-size'] + ([mode] if mode else []))
 
 
 def frame_model(frame):
@@ -215,15 +254,53 @@ def context_percent(session, frame):
     return None
 
 
-def native_rows(deck, session_id):
-    result = subprocess.run(deck + ['recall', 'timeline', session_id, '--tail', '80', '--json'],
-                            text=True, capture_output=True, timeout=8)
+def row_timestamp(row):
+    try:
+        return datetime.fromisoformat(row.get('ts', '').replace('Z', '+00:00')).timestamp()
+    except (TypeError, ValueError):
+        return None
+
+
+def native_rows(deck, session_id, session=None, since=None):
+    reference = session_id
+    def read(before=None):
+        window = ['--tail', '80'] if before is None else ['--before', before, '--limit', '80']
+        return subprocess.run(deck + ['recall', 'timeline', reference, '--json'] + window,
+                              text=True, capture_output=True, timeout=8)
+    result = read()
     value = json.loads(result.stdout)
+    if result.returncode and value.get('code') == 'NOT_FOUND':
+        session = session or json.loads(run(deck + ['session', 'show', session_id, '--json']))
+        native_id = session.get('codex_session_id') or ''
+        if (session.get('id') == session_id and session.get('tool') == 'codex' and
+                not session.get('ssh_host') and not session.get('wrapper') and
+                native_id != session_id and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{7,127}', native_id)):
+            # Same exact source as the Android timeline fallback; receipt row IDs stay canonical.
+            reference = native_id
+            result = read()
+            value = json.loads(result.stdout)
     if result.returncode and value.get('code') != 'NOT_FOUND':
         raise Refused(value.get('error') or 'Cannot read native delivery evidence.')
     rows = value.get('turns', [])
     if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
         raise Refused('Native history returned an unrecognized result.')
+    page = rows
+    visited = set()
+    for _ in range(15):
+        before = value.get('before_cursor')
+        times = [t for row in page if (t := row_timestamp(row)) is not None]
+        if (since is None or not page or not before or before in visited or
+                (times and min(times) < since)):
+            break
+        visited.add(before)
+        result = read(before)
+        value = json.loads(result.stdout)
+        if result.returncode:
+            raise Refused(value.get('error') or 'Cannot read earlier delivery evidence.')
+        page = value.get('turns', [])
+        if not isinstance(page, list) or any(not isinstance(row, dict) for row in page):
+            raise Refused('Native history returned an unrecognized result.')
+        rows = page + rows
     return rows
 
 
@@ -245,13 +322,11 @@ def native_receipt(session, deck, pid, receipt):
             receipt['native_thread'] != session.get('codex_session_id'))):
         return dict(receipt, state='unknown', settled=True, reason='Session changed before delivery could be confirmed. Do not resend without checking history.')
     def is_new(row):
-        try:
-            return datetime.fromisoformat(row.get('ts', '').replace('Z', '+00:00')).timestamp() >= since
-        except (TypeError, ValueError):
-            return False
+        timestamp = row_timestamp(row)
+        return timestamp is not None and timestamp >= since
 
     baseline = set(baseline)
-    found = [row for row in native_rows(deck, session['id']) if row.get('kind') == 'user' and
+    found = [row for row in native_rows(deck, session['id'], session, since=since) if row.get('kind') == 'user' and
              row.get('id') and row['id'] not in baseline and is_new(row) and
              message_digest(row.get('body', '')) == receipt['native_digest']]
     if len(found) == 1:
@@ -269,7 +344,7 @@ def native_send(session, deck, tmux, pane, pid, capture, message):
     if message.lstrip().startswith('!') or re.match(r'^/[A-Za-z-]+(?:\s|$)', message.lstrip()):
         raise Refused('Use the terminal for native slash or shell commands.')
     since = math.floor(time.time() * 1000) / 1000
-    baseline = [row['id'] for row in native_rows(deck, session['id']) if row.get('id')]
+    baseline = [row['id'] for row in native_rows(deck, session['id'], session) if row.get('id')]
     queue = json.loads(run(deck + ['session', 'queue', 'list', session['id'], '--json']))
     entries = queue if isinstance(queue, list) else queue.get('entries', queue.get('queue', []))
     if any(row.get('state', row.get('status', '')) not in ('landed', 'failed', 'cancelled', 'canceled') for row in entries):
@@ -283,12 +358,17 @@ def native_send(session, deck, tmux, pane, pid, capture, message):
     try:
         subprocess.run(tmux + ['load-buffer', '-b', buffer, '-'], input=message.encode(),
                        capture_output=True, check=True, timeout=8)
-        input_frame(capture())
-        # Bracketed paste keeps multiline/untrusted text out of the terminal key parser.
-        typed = True
-        run(tmux + ['paste-buffer', '-p', '-d', '-b', buffer, '-t', pane])
-        time.sleep(.25)
-        input_frame(capture(), expected=message)
+        with send_viewport(tmux, pane, message) as expanded:
+            input_frame(capture())
+            # Bracketed paste keeps multiline/untrusted text out of the terminal key parser.
+            typed = True
+            run(tmux + ['paste-buffer', '-p', '-d', '-b', buffer, '-t', pane])
+            time.sleep(.25)
+            input_frame(capture(), expected=message)
+        if expanded:
+            # Resizing cannot edit text. It can clip it again, so recheck the live composer
+            # structure here; full-content verification happened immediately before restore.
+            input_frame(capture(), verify_body=False)
         run(tmux + ['send-keys', '-t', pane, 'Enter'])
         deadline = time.monotonic() + 2
         while time.monotonic() < deadline:
@@ -307,6 +387,65 @@ def native_send(session, deck, tmux, pane, pid, capture, message):
             subprocess.run(tmux + ['delete-buffer', '-b', buffer], capture_output=True, timeout=8)
         except (OSError, subprocess.SubprocessError):
             pass
+
+
+def require_codex_runtime():
+    # A dedicated command is only supported in the tested Codex command contract.
+    codex = shutil.which('codex') or next((str(path) for path in (
+        Path.home() / '.codex/packages/standalone/current/bin/codex',
+        Path.home() / '.nix-profile/bin/codex', Path('/opt/homebrew/bin/codex'),
+        Path('/usr/local/bin/codex')) if path.is_file() and os.access(path, os.X_OK)), None)
+    if not codex:
+        raise Refused('Codex executable is unavailable over SSH. Use the terminal.')
+    version = run([codex, '--version']).strip()
+    if not re.search(r'\b0\.166\.\d+\b', version):
+        raise Refused('In-app controls currently require Codex 0.166.x. Open the terminal for this session.')
+
+
+def terminal_capture(session):
+    """Resolve the owning live pane, and recheck its process before every capture."""
+    socket = session.get('tmux_socket') or 'agent-deck'
+    tmux = ['tmux', '-L', socket]
+    name = session.get('tmux_session')
+    if not name:
+        raise Refused('Session has no live terminal.')
+    identity = run(tmux + ['show-environment', '-t', '=' + name, 'AGENTDECK_INSTANCE_ID']).strip()
+    if identity != 'AGENTDECK_INSTANCE_ID=' + session['id']:
+        raise Refused('Terminal identity changed. Reopen this session.')
+    panes = run(tmux + ['list-panes', '-t', '=' + name, '-F', '#{pane_id} #{pane_pid} #{pane_dead}']).strip().splitlines()
+    if len(panes) != 1 or len(panes[0].split()) != 3 or panes[0].split()[2] != '0':
+        raise Refused('Cannot identify one live session pane.')
+    pane, pid, _ = panes[0].split()
+
+    def capture():
+        live = run(tmux + ['display-message', '-p', '-t', pane, '#{pane_pid} #{pane_dead}']).strip()
+        if live != pid + ' 0':
+            raise Refused('Session restarted. Reopen model settings.')
+        return run(tmux + ['capture-pane', '-p', '-e', '-J', '-t', pane])
+
+    return tmux, pane, pid, capture
+
+
+def session_models(executable, profile):
+    if not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', profile):
+        raise Refused('Invalid profile')
+    sessions = json.loads(run([executable, '-p', profile, 'list', '--json']))
+    require_codex_runtime()
+    observed = []
+    for session in sessions:
+        if (session.get('tool') != 'codex' or session.get('ssh_host') or session.get('wrapper') or
+                session.get('archived') or session.get('status') in ('stopped', 'dead', 'queued', 'starting') or
+                session.get('status_source') == 'cached'):
+            continue
+        try:
+            _, _, _, capture = terminal_capture(session)
+            model = frame_model(capture())
+            if model:
+                observed.append(dict(id=session['id'], **model))
+        except (Refused, OSError, ValueError, subprocess.TimeoutExpired):
+            # A disappearing or unreadable pane must not hide other sessions.
+            continue
+    return dict(sessions=observed)
 
 
 def control(executable, profile, session_id, model='', effort='', operation='model', payload=None):
@@ -337,37 +476,11 @@ def control(executable, profile, session_id, model='', effort='', operation='mod
         return dict(model=model, effort='', tool='claude', confirmed=True)
     if session.get('tool') != 'codex':
         raise Refused('Model controls are available for Codex and Claude.')
-    # A dedicated command is only supported in the tested Codex command contract.
-    codex = shutil.which('codex') or next((str(path) for path in (
-        Path.home() / '.codex/packages/standalone/current/bin/codex',
-        Path.home() / '.nix-profile/bin/codex', Path('/opt/homebrew/bin/codex'),
-        Path('/usr/local/bin/codex')) if path.is_file() and os.access(path, os.X_OK)), None)
-    if not codex:
-        raise Refused('Codex executable is unavailable over SSH. Use the terminal.')
-    version = run([codex, '--version']).strip()
-    if not re.search(r'\b0\.166\.\d+\b', version):
-        raise Refused('In-app controls currently require Codex 0.166.x. Open the terminal for this session.')
+    require_codex_runtime()
     models = available_models(session) if operation == 'model' else {}
     if model and (model not in models or (effort and effort not in models[model])):
         raise Refused('This model/reasoning combination is unavailable. Read current settings again.')
-    socket = session.get('tmux_socket') or 'agent-deck'
-    tmux = ['tmux', '-L', socket]
-    name = session.get('tmux_session')
-    if not name:
-        raise Refused('Session has no live terminal.')
-    identity = run(tmux + ['show-environment', '-t', '=' + name, 'AGENTDECK_INSTANCE_ID']).strip()
-    if identity != 'AGENTDECK_INSTANCE_ID=' + session_id:
-        raise Refused('Terminal identity changed. Reopen this session.')
-    panes = run(tmux + ['list-panes', '-t', '=' + name, '-F', '#{pane_id} #{pane_pid} #{pane_dead}']).strip().splitlines()
-    if len(panes) != 1 or len(panes[0].split()) != 3 or panes[0].split()[2] != '0':
-        raise Refused('Cannot identify one live session pane.')
-    pane, pid, _ = panes[0].split()
-
-    def capture():
-        live = run(tmux + ['display-message', '-p', '-t', pane, '#{pane_pid} #{pane_dead}']).strip()
-        if live != pid + ' 0':
-            raise Refused('Session restarted. Reopen model settings.')
-        return run(tmux + ['capture-pane', '-p', '-e', '-J', '-t', pane])
+    tmux, pane, pid, capture = terminal_capture(session)
 
     def history():
         return run(tmux + ['capture-pane', '-p', '-J', '-S', '-200', '-t', pane])
@@ -431,7 +544,9 @@ def control(executable, profile, session_id, model='', effort='', operation='mod
 
 def main():
     try:
-        if sys.argv[1] in ('--send', '--receipt', '--context'):
+        if sys.argv[1] == '--models':
+            result = session_models(*sys.argv[2:])
+        elif sys.argv[1] in ('--send', '--receipt', '--context'):
             operation = sys.argv[1][2:]
             payload = sys.stdin.read() if operation in ('send', 'receipt') else None
             if operation == 'receipt':

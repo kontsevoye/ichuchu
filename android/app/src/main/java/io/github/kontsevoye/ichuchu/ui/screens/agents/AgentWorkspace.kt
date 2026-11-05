@@ -138,6 +138,7 @@ data class AgentUiState(
     val sessionMutationId: String? = null,
     val contextRemaining: Int? = null,
     val currentModel: DeckModelSettings? = null,
+    val sessionModels: Map<String, DeckModelSettings> = emptyMap(),
 ) {
     val selected: DeckSession?
         get() = sessions.firstOrNull { it.id == selectedId }
@@ -298,6 +299,7 @@ class AgentWorkspace(
                                 selectedId = null,
                                 chat = AgentChatState(),
                                 sessions = emptyList(),
+                                sessionModels = emptyMap(),
                             )
                         }
                         restoreStore()
@@ -347,6 +349,7 @@ class AgentWorkspace(
                                 online = false,
                                 contextRemaining = null,
                                 currentModel = null,
+                                sessionModels = emptyMap(),
                                 sessionMutationId = null,
                                 connecting = false,
                                 live = false,
@@ -403,6 +406,7 @@ class AgentWorkspace(
                 authRequest = 0,
                 contextRemaining = null,
                 currentModel = null,
+                sessionModels = emptyMap(),
                 sessionMutationId = null,
             )
         }
@@ -431,7 +435,24 @@ class AgentWorkspace(
         val sessions = deck.sessions()
         store?.saveSessions(sessions)
         mutable.update {
-            it.copy(sessions = sessions, projects = mergeDeckProjects(groups, sessions))
+            it.copy(
+                sessions = sessions,
+                projects = mergeDeckProjects(groups, sessions),
+                sessionModels =
+                    it.sessionModels.filterKeys { id ->
+                        sessions.any { s ->
+                            s.id == id &&
+                                s.local &&
+                                s.status !in
+                                    setOf(
+                                        AgentStatus.Stopped,
+                                        AgentStatus.Starting,
+                                        AgentStatus.Queued,
+                                        AgentStatus.Unknown,
+                                    )
+                        }
+                    },
+            )
         }
         statusChanges.accept(sessions, observation).forEach {
             AgentNotifications.show(application, hostId, mutable.value.hostName, it)
@@ -439,7 +460,39 @@ class AgentWorkspace(
     }
 
     private suspend fun refreshContext(deck: DeckClient) {
+        if (mutable.value.changingModel || mutable.value.sessionMutationId != null) return
         val session = mutable.value.selected
+        if (foreground && session == null && !mutable.value.showCreate) {
+            val previousModels = mutable.value.sessionModels
+            val previousSessions = mutable.value.sessions
+            val models =
+                try {
+                    deck.sessionModels()
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                    emptyMap()
+                }
+            if (client === deck) {
+                mutable.update {
+                    if (
+                        it.changingModel ||
+                            it.sessionMutationId != null ||
+                            it.selectedId != null ||
+                            it.sessions !== previousSessions ||
+                            it.sessionModels != previousModels
+                    ) {
+                        it
+                    } else {
+                        it.copy(
+                            sessionModels =
+                                models.filterKeys { id -> it.sessions.any { s -> s.id == id } }
+                        )
+                    }
+                }
+            }
+            return
+        }
         if (
             !foreground ||
                 session?.local != true ||
@@ -462,7 +515,16 @@ class AgentWorkspace(
                 if (it.changingModel || it.currentModel != previousModel) {
                     it
                 } else {
-                    it.copy(contextRemaining = context?.remaining, currentModel = context?.model)
+                    it.copy(
+                        contextRemaining = context?.remaining,
+                        currentModel = context?.model,
+                        sessionModels =
+                            (it.sessionModels - session.id) +
+                                context
+                                    ?.model
+                                    ?.let { model -> mapOf(session.id to model) }
+                                    .orEmpty(),
+                    )
                 }
             }
         }
@@ -488,6 +550,7 @@ class AgentWorkspace(
                 deck.sessionAction(session, action)
                 if (client !== deck) return@launch
                 refreshSessions(deck)
+                mutable.update { it.copy(sessionModels = it.sessionModels - id) }
                 if (action == DeckSessionAction.Delete) {
                     check(mutable.value.sessions.none { it.id == id }) {
                         "Deletion is not confirmed. Refresh the list before trying again."
@@ -624,6 +687,7 @@ class AgentWorkspace(
 
     fun openSession(id: String) {
         if (mutable.value.selectedId == id) return
+        val cache = store
         chatJob?.cancel()
         mutable.update {
             it.copy(
@@ -631,7 +695,7 @@ class AgentWorkspace(
                 contextRemaining = null,
                 currentModel = null,
                 showCreate = false,
-                chat = AgentChatState(),
+                chat = AgentChatState(draft = pendingDrafts["${cache?.scope}:$id"].orEmpty()),
                 chatLoading = true,
                 chatError = null,
                 historyMissing = false,
@@ -640,11 +704,12 @@ class AgentWorkspace(
                 live = false,
             )
         }
-        val cache = store
         refreshRequested = true
         scope.launch {
             chatLock.withLock {
-                val cached = cache?.chat(id) ?: AgentChatState()
+                val disk = cache?.chat(id) ?: AgentChatState()
+                val cached =
+                    pendingDrafts["${cache?.scope}:$id"]?.let { disk.copy(draft = it) } ?: disk
                 if (mutable.value.selectedId != id || store?.scope != cache?.scope) return@withLock
                 reducer = DeckTimelineReducer().also { it.snapshot(cached.timeline) }
                 mutable.update { it.copy(chat = cached, chatLoading = false) }
@@ -756,7 +821,11 @@ class AgentWorkspace(
                     if (it.modelSettings?.sessionId != form.sessionId || client !== deck) {
                         it
                     } else {
-                        it.copy(modelSettings = null, currentModel = applied.current)
+                        it.copy(
+                            modelSettings = null,
+                            currentModel = applied.current,
+                            sessionModels = it.sessionModels + (form.sessionId to applied.current),
+                        )
                     }
                 }
                 if (mutable.value.selectedId == form.sessionId && client === deck) {

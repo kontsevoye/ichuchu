@@ -420,6 +420,7 @@ class DeckProtocolTest {
 }
 
 internal class FakeDeckTransport(private val guard: Boolean = true) : DeckTransport {
+    var replyForCommand: ((String) -> DeckExecResult?)? = null
     var reply: DeckExecResult? = null
     var failure: Exception? = null
     var stdin: ByteArray? = null
@@ -445,6 +446,9 @@ internal class FakeDeckTransport(private val guard: Boolean = true) : DeckTransp
         }
         onStarted()
         failure?.let { throw it }
+        replyForCommand?.invoke(command)?.let {
+            return it
+        }
         reply?.let {
             return it
         }
@@ -469,7 +473,9 @@ internal class FakeDeckTransport(private val guard: Boolean = true) : DeckTransp
         return DeckExecResult(output, "synthetic warning, separate stream", 0)
     }
 
-    override suspend fun follow(command: String, onFrame: suspend (String) -> Unit) = Unit
+    override suspend fun follow(command: String, onFrame: suspend (String) -> Unit) {
+        this.command = command
+    }
 
     override fun interrupt() = Unit
 }

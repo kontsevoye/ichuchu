@@ -41,6 +41,12 @@ UPLOADS = {}
 MODEL_SETTINGS = {}
 
 
+def history_rows(reference):
+    # Session show knows this exact live identity even when Deck's stored-ID resolver does not.
+    session = next((s for s in SESSIONS if s.get('codex_session_id') == reference), None)
+    return HISTORY.get(session['id'] if session else reference)
+
+
 def encoded(value):
     return (json.dumps(value, ensure_ascii=False) + "\n").encode()
 
@@ -75,6 +81,13 @@ def process(channel, command):
         channel.sendall(b"reset\n")
         return 0
     if upload[:3] == ["exec", "python3", "-c"] and upload[3].startswith("# ichuchu-model-control-v1\n"):
+        if upload[4] == '--models':
+            with LOCK:
+                rows = [dict(id=s['id'], model=MODEL_SETTINGS.get(s['id'], ('fixture-model', 'medium'))[0],
+                             effort=MODEL_SETTINGS.get(s['id'], ('fixture-model', 'medium'))[1])
+                        for s in SESSIONS if s['tool'] == 'codex' and s.get('status') != 'stopped']
+            channel.sendall(encoded({'success': True, 'sessions': rows}))
+            return 0
         if upload[4] == '--context':
             with LOCK:
                 model, effort = MODEL_SETTINGS.get(upload[-1], ("fixture-model", "medium"))
@@ -272,7 +285,8 @@ def process(channel, command):
             output = {'success': True, 'id': args[2]}
     elif args[:2] == ["recall", "timeline"]:
         with LOCK:
-            rows = HISTORY.get(args[2])
+            # Reproduce 1.16.36's live-show/stored-Recall mismatch in every existing-chat test.
+            rows = None if args[2] == 'fixture-existing-full-id' else history_rows(args[2])
             if rows is None:
                 output = {"success": False, "code": "NOT_FOUND", "error": "session has no native transcript on this machine yet"}
                 code = 1
@@ -283,7 +297,7 @@ def process(channel, command):
         deadline = time.monotonic() + 8
         while not channel.closed and time.monotonic() < deadline:
             with LOCK:
-                rows = list(HISTORY.get(args[2], [])[cursor:])
+                rows = list((history_rows(args[2]) or [])[cursor:])
             for row in rows:
                 cursor += 1
                 channel.sendall(encoded({"frame": "row", "row": row, "cursor": str(cursor)}))

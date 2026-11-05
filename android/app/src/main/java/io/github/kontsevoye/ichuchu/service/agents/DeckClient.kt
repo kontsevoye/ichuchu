@@ -1,5 +1,6 @@
 package io.github.kontsevoye.ichuchu.service.agents
 
+import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -17,6 +18,7 @@ class DeckClient(
         private set
 
     private lateinit var executable: String
+    private val historyReferences = ConcurrentHashMap<String, String>()
     var eventCursor: String? = null
         private set
 
@@ -178,9 +180,37 @@ class DeckClient(
             } else {
                 listOf("--before", before, "--limit", "80")
             }
-        return DeckTimeline.parse(
-            obj(*(listOf("recall", "timeline", id, "--json") + window).toTypedArray())
-        )
+        suspend fun read(reference: String) =
+            obj(*(listOf("recall", "timeline", reference, "--json") + window).toTypedArray())
+        var reference = id
+        val value =
+            try {
+                read(id)
+            } catch (e: DeckCommandException) {
+                if (e.code != "NOT_FOUND") throw e
+                // Deck 1.16.36 can expose a live native ID in show while its Recall resolver
+                // still sees an unlinked stored instance. Never guess another chat by directory.
+                reference = nativeHistoryReference(id) ?: throw e
+                read(reference)
+            }
+        return DeckTimeline.parse(value).also {
+            if (reference == id) historyReferences.remove(id) else historyReferences[id] = reference
+        }
+    }
+
+    private suspend fun nativeHistoryReference(id: String): String? {
+        val session = obj("session", "show", id, "--json")
+        if (
+            session.text("id") != id ||
+                session.text("tool") != "codex" ||
+                session.text("ssh_host").isNotBlank() ||
+                session.text("wrapper").isNotBlank()
+        ) {
+            return null
+        }
+        return session.text("codex_session_id").takeIf {
+            it != id && it.matches(Regex("[A-Za-z0-9][A-Za-z0-9_-]{7,127}"))
+        }
     }
 
     suspend fun projects(): List<DeckProject> {
@@ -240,8 +270,14 @@ class DeckClient(
     }
 
     suspend fun follow(id: String, cursor: String?, onFrame: suspend (JsonObject) -> Unit) {
+        val reference = historyReferences[id]
+        if (reference != null && nativeHistoryReference(id) != reference) {
+            historyReferences.remove(id, reference)
+            onFrame(JsonObject(mapOf("frame" to JsonPrimitive("resync_required"))))
+            return
+        }
         val args =
-            listOf("recall", "follow", id, "--jsonl", "--status") +
+            listOf("recall", "follow", reference ?: id, "--jsonl", "--status") +
                 (cursor?.let { listOf("--after", it) } ?: emptyList())
         transport.follow(DeckCommands.leasedFollow(command(args))) { onFrame(parseDeckObject(it)) }
     }
@@ -283,6 +319,21 @@ class DeckClient(
 
     suspend fun contextRemaining(id: String): Int? = sessionContext(id).remaining
 
+    /** One read-only host request for live settings; launch defaults are never substituted. */
+    suspend fun sessionModels(): Map<String, DeckModelSettings> =
+        nativeControl("--models")
+            .objects("sessions")
+            .mapNotNull { value ->
+                val id = value.text("id")
+                val model = value.text("model")
+                if (id.isBlank() || model.isBlank()) {
+                    null
+                } else {
+                    id to DeckModelSettings(model, value.text("effort"))
+                }
+            }
+            .toMap()
+
     suspend fun sessionContext(id: String): DeckSessionContext {
         val value = nativeControl("--context", id)
         return DeckSessionContext(
@@ -299,7 +350,7 @@ class DeckClient(
 
     private suspend fun nativeControl(
         operation: String,
-        id: String,
+        id: String = "",
         stdin: ByteArray? = null,
         onStarted: suspend () -> Unit = {},
     ): JsonObject {
@@ -309,14 +360,15 @@ class DeckClient(
                 .use { it.readText() }
         val command =
             "exec python3 -c " +
-                listOf(script, operation, executable, profile, id)
+                (listOf(script, operation, executable, profile) +
+                        listOfNotNull(id.takeIf { it.isNotEmpty() }))
                     .joinToString(" ", transform = DeckCommands::quote)
         val result = transport.execute(command, stdin, timeoutMs = 45_000, onStarted = onStarted)
         val receipt = optionalParse(result.stdout)
         // A refusal before typing is safe to report; a lost response remains unknown and is never
         // retried.
         if (
-            operation != "--context" &&
+            operation !in setOf("--context", "--models") &&
                 receipt?.text("state") in setOf("failed", "typed", "submitted", "landed", "unknown")
         ) {
             val value = checkNotNull(receipt)
@@ -344,7 +396,7 @@ class DeckClient(
             }
         }
         requireSuccess(result)
-        check(operation == "--context") {
+        check(operation in setOf("--context", "--models")) {
             "Native delivery result is unrecognized. Check history before sending again."
         }
         return receipt ?: error("Remote session control returned no result")
