@@ -13,6 +13,9 @@ internal val deckJson = Json { ignoreUnknownKeys = true }
 
 data class DeckModelSettings(val model: String = "", val effort: String = "")
 
+/** Current terminal observation, independent of persisted launch defaults. */
+data class DeckSessionContext(val remaining: Int?, val model: DeckModelSettings?)
+
 data class DeckModelOptions(val current: DeckModelSettings, val models: Map<String, List<String>>)
 
 internal fun JsonObject.text(key: String): String =

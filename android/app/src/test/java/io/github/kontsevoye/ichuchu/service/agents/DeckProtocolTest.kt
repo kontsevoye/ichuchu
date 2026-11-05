@@ -379,6 +379,38 @@ class DeckProtocolTest {
         assertEquals(0, wire.mutations)
     }
 
+    @Test
+    fun currentModelAndReasoningComeFromTheSameReadAsContext() = runBlocking {
+        val wire = FakeDeckTransport()
+        val client = DeckClient(wire, "qa", "agent-deck")
+        client.probe()
+        wire.reply =
+            DeckExecResult(
+                """{"success":true,"remaining":21,"model":"gpt-6-astra","effort":"max"}""",
+                "",
+                0,
+            )
+        val before = wire.executions
+        assertEquals(
+            DeckSessionContext(21, DeckModelSettings("gpt-6-astra", "max")),
+            client.sessionContext("session"),
+        )
+        assertEquals(before + 1, wire.executions)
+        wire.reply =
+            DeckExecResult(
+                """{"success":true,"remaining":null,"model":"gpt-6.1-sol","effort":"high"}""",
+                "",
+                0,
+            )
+        assertEquals(
+            DeckSessionContext(null, DeckModelSettings("gpt-6.1-sol", "high")),
+            client.sessionContext("session"),
+        )
+        wire.reply = DeckExecResult("""{"success":true,"remaining":73}""", "", 0)
+        assertEquals(DeckSessionContext(73, null), client.sessionContext("session"))
+        assertEquals(0, wire.mutations)
+    }
+
     private fun page(rows: String, cursor: String) =
         DeckTimeline.parse(
             json(

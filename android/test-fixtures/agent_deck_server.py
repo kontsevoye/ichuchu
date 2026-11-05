@@ -76,7 +76,9 @@ def process(channel, command):
         return 0
     if upload[:3] == ["exec", "python3", "-c"] and upload[3].startswith("# ichuchu-model-control-v1\n"):
         if upload[4] == '--context':
-            channel.sendall(encoded({'success': True, 'remaining': 73}))
+            with LOCK:
+                model, effort = MODEL_SETTINGS.get(upload[-1], ("fixture-model", "medium"))
+            channel.sendall(encoded({'success': True, 'remaining': 73, 'model': model, 'effort': effort}))
             return 0
         if upload[4] == '--send':
             session_id = upload[-1]

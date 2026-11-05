@@ -184,7 +184,8 @@ of device, server and input has been exhausted.
 - [ ] CHAT-22 Native sends handle multiline/Unicode/long paste/narrow terminal input; drafts, menus, control characters, native commands and older pending Deck deliveries are protected.
 - [ ] CHAT-23 Reconnect, delayed indexing, repeated text, changed pane/thread and missing or ambiguous delivery evidence never invent a landed row or resend a request.
 - [ ] CHAT-24 Remaining context uses current native usage, handles 0/100/unknown/compaction and clears on navigation/disconnect; narrow footers fall back only to the exact conversation.
-- [ ] CHAT-25 Context appears beside Message or in existing compact button space; history/input dimensions, Send and attachment controls remain unchanged at 320dp/200% with IME.
+- [ ] CHAT-25 Current model, reasoning and remaining context appear together above input, update after model changes, and clear on navigation/disconnect. Model names shorten before reasoning/percent; values and transient sending do not move history/input or overlap Send/attachment controls at 320dp/200% with IME.
+- [ ] CHAT-26 Shared-backend `← for agents` shortcuts, with and without warnings, permit one native send and idle model controls; actual menus and drafts still refuse before typing.
 
 ## Settings, appearance and custom actions
 

@@ -137,6 +137,7 @@ data class AgentUiState(
     val changingModel: Boolean = false,
     val sessionMutationId: String? = null,
     val contextRemaining: Int? = null,
+    val currentModel: DeckModelSettings? = null,
 ) {
     val selected: DeckSession?
         get() = sessions.firstOrNull { it.id == selectedId }
@@ -345,6 +346,7 @@ class AgentWorkspace(
                             it.copy(
                                 online = false,
                                 contextRemaining = null,
+                                currentModel = null,
                                 sessionMutationId = null,
                                 connecting = false,
                                 live = false,
@@ -400,6 +402,7 @@ class AgentWorkspace(
                 live = false,
                 authRequest = 0,
                 contextRemaining = null,
+                currentModel = null,
                 sessionMutationId = null,
             )
         }
@@ -437,17 +440,31 @@ class AgentWorkspace(
 
     private suspend fun refreshContext(deck: DeckClient) {
         val session = mutable.value.selected
-        if (!foreground || session?.local != true || !session.supported) return
-        val remaining =
+        if (
+            !foreground ||
+                session?.local != true ||
+                !session.supported ||
+                mutable.value.changingModel
+        ) {
+            return
+        }
+        val previousModel = mutable.value.currentModel
+        val context =
             try {
-                deck.contextRemaining(session.id)
+                deck.sessionContext(session.id)
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
                 null
             }
         if (client === deck && mutable.value.selectedId == session.id) {
-            mutable.update { it.copy(contextRemaining = remaining) }
+            mutable.update {
+                if (it.changingModel || it.currentModel != previousModel) {
+                    it
+                } else {
+                    it.copy(contextRemaining = context?.remaining, currentModel = context?.model)
+                }
+            }
         }
     }
 
@@ -477,7 +494,9 @@ class AgentWorkspace(
                     }
                     if (mutable.value.selectedId == id) back()
                 } else if (mutable.value.selectedId == id) {
-                    mutable.update { it.copy(contextRemaining = null, modelSettings = null) }
+                    mutable.update {
+                        it.copy(contextRemaining = null, currentModel = null, modelSettings = null)
+                    }
                     startChat()
                 }
                 mutable.update { it.copy(notice = action.completed) }
@@ -610,6 +629,7 @@ class AgentWorkspace(
             it.copy(
                 selectedId = id,
                 contextRemaining = null,
+                currentModel = null,
                 showCreate = false,
                 chat = AgentChatState(),
                 chatLoading = true,
@@ -645,6 +665,7 @@ class AgentWorkspace(
             it.copy(
                 selectedId = null,
                 contextRemaining = null,
+                currentModel = null,
                 chat = AgentChatState(),
                 live = false,
                 chatError = null,
@@ -669,13 +690,14 @@ class AgentWorkspace(
                         it
                     } else {
                         it.copy(
+                            currentModel = current.current,
                             modelSettings =
                                 form.copy(
                                     current = current.current,
                                     choice = current.current,
                                     models = current.models,
                                     loading = false,
-                                )
+                                ),
                         )
                     }
                 }
@@ -734,7 +756,7 @@ class AgentWorkspace(
                     if (it.modelSettings?.sessionId != form.sessionId || client !== deck) {
                         it
                     } else {
-                        it.copy(modelSettings = null)
+                        it.copy(modelSettings = null, currentModel = applied.current)
                     }
                 }
                 if (mutable.value.selectedId == form.sessionId && client === deck) {
@@ -762,6 +784,7 @@ class AgentWorkspace(
                 }
             } finally {
                 mutable.update { it.copy(changingModel = false) }
+                refreshRequested = true
             }
         }
     }

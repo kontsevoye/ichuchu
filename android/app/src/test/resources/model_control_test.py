@@ -138,6 +138,39 @@ class GuardTest(unittest.TestCase):
 
 
 class NativeInputTest(unittest.TestCase):
+    def test_shared_backend_shortcuts_are_not_an_open_menu(self):
+        for hint in ['← for agents · ? for shortcuts',
+                     '← for agents · ? for shortcuts     ⚠ 2 · f2',
+                     '← for agents', 'tab to queue', 'tab to queue message     ⚠ 2 · f2']:
+            with self.subTest(hint=hint):
+                frame = FRAME.replace('? for shortcuts', hint)
+                control.input_frame(frame)
+                control.input_frame(frame.replace('Ask Codex to do anything', 'hello'), 'hello')
+                if not hint.startswith('tab'):
+                    self.assertEqual(('gpt-6.1-sol', 'high'), control.ready_frame(frame))
+                for extra in [' · Select model', '\nEnter to confirm']:
+                    with self.assertRaises(control.Refused):
+                        control.input_frame(frame.rstrip() + extra)
+
+    def test_shared_backend_empty_composer_sends_exactly_once(self):
+        frame = FRAME.replace('? for shortcuts', '← for agents · ? for shortcuts     ⚠ 2 · f2')
+        message = 'hello'
+        captures = iter([frame, frame, frame.replace('Ask Codex to do anything', message), frame])
+        with patch.object(control, 'native_rows', return_value=[]), \
+                patch.object(control, 'run', return_value='[]') as run, \
+                patch.object(control.subprocess, 'run'), patch.object(control.time, 'sleep'):
+            receipt = control.native_send({'id': 'qa'}, [], [], '%1', '123', lambda: next(captures), message)
+        self.assertTrue(receipt['submitted'])
+        self.assertEqual(1, sum('paste-buffer' in call.args[0] for call in run.call_args_list))
+        self.assertEqual(1, sum(call.args[0][-1] == 'Enter' for call in run.call_args_list))
+
+    def test_current_model_can_be_observed_without_requiring_an_empty_idle_composer(self):
+        for frame in [FRAME, FRAME.replace('Answer', 'Working (esc to interrupt)'),
+                      FRAME.replace('Ask Codex to do anything', 'existing draft'),
+                      FRAME.replace('Context 96% left', 'Co…')]:
+            self.assertEqual({'model': 'gpt-6.1-sol', 'effort': 'high'}, control.frame_model(frame))
+        self.assertEqual({}, control.frame_model('Choose a model\nEnter to confirm'))
+
     def test_busy_composer_accepts_input_without_waiting_for_turn_end(self):
         busy = FRAME.replace('Answer', 'Working (2s • esc to interrupt)')
         self.assertIn('Context 96% left', control.input_frame(busy))

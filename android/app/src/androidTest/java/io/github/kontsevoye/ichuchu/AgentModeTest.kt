@@ -514,8 +514,20 @@ class AgentModeTest {
             compose.runOnIdle { vm.respondToHostKey(true) }
             compose.waitUntil(30_000) { vm.state.value.online }
             capture("agent-sessions")
+            runBlocking {
+                val control = transport()
+                try {
+                    control.execute("fixture-model-reset fixture-existing-full-id")
+                } finally {
+                    control.interrupt()
+                }
+            }
             compose.onNodeWithText("Fix draft recovery").performClick()
             compose.waitUntil(20_000) { vm.state.value.chat.timeline.rows.isNotEmpty() }
+            compose.waitUntil(15_000) { vm.state.value.currentModel != null }
+            compose
+                .onNodeWithContentDescription("Model: fixture-model, reasoning: medium")
+                .assertIsDisplayed()
             capture("agent-chat")
             val prompt = "Synthetic UI request 世界 ${java.util.UUID.randomUUID()}"
             compose.onAllNodes(hasSetTextAction()).onLast().performTextInput(prompt)
@@ -527,14 +539,6 @@ class AgentModeTest {
                 compose.onNodeWithTag("agent_chat_history").fetchSemanticsNode().boundsInRoot
             val inputBounds =
                 compose.onAllNodes(hasSetTextAction()).onLast().fetchSemanticsNode().boundsInRoot
-            runBlocking {
-                val control = transport()
-                try {
-                    control.execute("fixture-model-reset fixture-existing-full-id")
-                } finally {
-                    control.interrupt()
-                }
-            }
             compose.onNodeWithContentDescription("Session options").performClick()
             capture("agent-session-options")
             compose.onNodeWithText("Model & reasoning").performClick()
@@ -545,13 +549,21 @@ class AgentModeTest {
             compose.onNodeWithText("fixture-model  ▾").performClick()
             compose.onNodeWithText("○ fixture-second-model").performClick()
             assertEquals("", vm.state.value.modelSettings?.choice?.effort)
-            compose.onNodeWithText("default  ▾").performClick()
-            compose.onNodeWithText("○ high").performClick()
+            compose
+                .onNodeWithText("default  ▾")
+                .performScrollTo()
+                .assertIsDisplayed()
+                .performClick()
+            capture("agent-reasoning-picker")
+            compose.onNodeWithText("○ high").performScrollTo().assertIsDisplayed().performClick()
             capture("agent-model-choice")
             compose.onNodeWithText("Apply").performClick()
             compose.waitUntil(15_000) {
                 vm.state.value.modelSettings == null && !vm.state.value.changingModel
             }
+            compose
+                .onNodeWithContentDescription("Model: fixture-second-model, reasoning: high")
+                .assertIsDisplayed()
             assertEquals(prompt, vm.state.value.chat.draft)
             assertTrue(vm.state.value.chat.timeline.rows.none { "/model" in it.body })
             compose.onAllNodes(hasSetTextAction()).onLast().performClick()
@@ -765,6 +777,7 @@ class AgentModeTest {
             compose.runOnIdle { vm.disconnect() }
             compose.waitUntil { !vm.state.value.online }
             assertEquals(null, vm.state.value.contextRemaining)
+            assertEquals(null, vm.state.value.currentModel)
         } finally {
             compose.runOnIdle {
                 vm.disconnect()

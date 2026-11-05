@@ -56,13 +56,18 @@ Claude model changes use Deck's guarded `session command /model` operation.
 Claude reasoning still uses its terminal. When an SSH result is lost, inspect the
 terminal and read the current settings before applying again.
 
-For Codex, **N% left** appears to the right of **> Message**. With a compact
-composer it moves into the existing space between attachment and Send buttons,
-without adding a row. The app reads Codex's own footer or the latest native token
+For Codex, the current **model**, **reasoning level** and **N%** remaining context
+appear together above the message field, including while the keyboard is open.
+The model and reasoning come from the live terminal footer, so changes made
+through `/model` are reflected too. Long model names shorten on narrow screens
+while reasoning and the percentage remain visible. The app reads Codex's own
+footer or the latest native token
 usage for the exact conversation, using Codex's context formula. It does not
 confuse cumulative token usage or Deck's startup-context estimate with remaining
 context. Unknown, disconnected and unsupported values are hidden; zero is shown.
 The value refreshes while the chat is open and may rise after native compaction.
+The ordinary `← for agents` navigation hint is supported alongside shortcut,
+queue and warning hints; it does not mean that a terminal menu is open.
 
 The session list and chat always use SSH commands without a PTY. Choosing Mosh
 for the server applies to the optional terminal, including its existing UDP

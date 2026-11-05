@@ -281,8 +281,18 @@ class DeckClient(
         return nativeControl("--send", session.id, message.toByteArray(Charsets.UTF_8), onStarted)
     }
 
-    suspend fun contextRemaining(id: String): Int? =
-        nativeControl("--context", id).number("remaining")?.takeIf { it in 0..100 }
+    suspend fun contextRemaining(id: String): Int? = sessionContext(id).remaining
+
+    suspend fun sessionContext(id: String): DeckSessionContext {
+        val value = nativeControl("--context", id)
+        return DeckSessionContext(
+            value.number("remaining")?.takeIf { it in 0..100 },
+            value
+                .text("model")
+                .takeIf { it.isNotBlank() }
+                ?.let { DeckModelSettings(it, value.text("effort")) },
+        )
+    }
 
     suspend fun nativeSendStatus(id: String, receipt: JsonObject): JsonObject =
         nativeControl("--receipt", id, receipt.toString().toByteArray(Charsets.UTF_8))

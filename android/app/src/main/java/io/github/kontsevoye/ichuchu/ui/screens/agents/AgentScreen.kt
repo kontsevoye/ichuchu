@@ -62,6 +62,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.github.kontsevoye.ichuchu.service.agents.AgentNotifications
 import io.github.kontsevoye.ichuchu.service.agents.AgentStatus
+import io.github.kontsevoye.ichuchu.service.agents.DeckModelSettings
 import io.github.kontsevoye.ichuchu.service.agents.DeckNativeHistory
 import io.github.kontsevoye.ichuchu.service.agents.DeckRow
 import io.github.kontsevoye.ichuchu.service.agents.DeckSend
@@ -1091,17 +1092,23 @@ internal fun ColumnScope.AgentChat(
                     AgentButton("×", onCancelUpload, description = "Cancel file upload")
                 }
             }
+        if (
+            (!keyboardVisible && !largeFont) ||
+                state.currentModel != null ||
+                state.contextRemaining != null
+        ) {
+            AgentComposerStatus(state.currentModel, state.contextRemaining)
+        }
         IchuTextField(
             state.chat.draft,
             onDraft,
             label = "Message",
             placeholder = "Message agent…",
-            showLabel = !keyboardVisible && !largeFont,
+            showLabel = false,
             minLines = if (keyboardVisible || largeFont) 1 else 2,
             maxLines = if (largeFont) 2 else 4,
             autoFocus = false,
             modifier = Modifier.fillMaxWidth(),
-            trailingLabel = { state.contextRemaining?.let { AgentContextIndicator(it) } },
         )
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             AgentButton(
@@ -1111,24 +1118,15 @@ internal fun ColumnScope.AgentChat(
                 description = "Attach photos or files",
             )
             Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
-                if (
-                    (keyboardVisible || largeFont) &&
-                        state.contextRemaining != null &&
-                        state.online &&
-                        !state.sending
-                ) {
-                    AgentContextIndicator(state.contextRemaining, compact = true)
-                } else {
-                    IchuText(
-                        when {
-                            !state.online -> "Draft saved"
-                            keyboardVisible || largeFont -> ""
-                            else -> "Enter adds a new line"
-                        },
-                        style = type.bodySmall,
-                        color = colors.textMuted,
-                    )
-                }
+                IchuText(
+                    when {
+                        !state.online -> "Draft saved"
+                        keyboardVisible || largeFont -> ""
+                        else -> "Enter adds a new line"
+                    },
+                    style = type.bodySmall,
+                    color = colors.textMuted,
+                )
             }
             AgentButton(
                 if (state.sending) "sending…" else "send ↑",
@@ -1149,9 +1147,57 @@ internal fun ColumnScope.AgentChat(
 }
 
 @Composable
-private fun AgentContextIndicator(percent: Int, compact: Boolean = false) {
+private fun AgentComposerStatus(model: DeckModelSettings?, percent: Int?) {
+    Row(
+        Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Row(
+            Modifier.weight(1f),
+            horizontalArrangement =
+                Arrangement.spacedBy(6.dp, if (model == null) Alignment.Start else Alignment.End),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            IchuText(
+                model?.model ?: "> Message",
+                style = IchuTypography.current.labelSmall,
+                color = IchuColors.current.textMuted,
+                modifier =
+                    Modifier.weight(1f, fill = false)
+                        .then(
+                            if (model != null) {
+                                Modifier.testTag("agent_current_model").semantics {
+                                    contentDescription =
+                                        "Model: ${model.model}, reasoning: ${model.effort.ifBlank { "unknown" }}"
+                                }
+                            } else {
+                                Modifier
+                            }
+                        ),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            model
+                ?.effort
+                ?.takeIf { it.isNotBlank() }
+                ?.let {
+                    IchuText(
+                        it,
+                        style = IchuTypography.current.labelSmall,
+                        color = IchuColors.current.textMuted,
+                        maxLines = 1,
+                    )
+                }
+        }
+        percent?.let { AgentContextIndicator(it) }
+    }
+}
+
+@Composable
+private fun AgentContextIndicator(percent: Int) {
     IchuText(
-        if (compact) "$percent%" else "$percent% left",
+        "$percent%",
         style = IchuTypography.current.labelSmall,
         color = if (percent <= 20) IchuColors.current.warning else IchuColors.current.textMuted,
         modifier =

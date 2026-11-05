@@ -37,6 +37,7 @@ import androidx.test.platform.app.InstrumentationRegistry
 import io.github.kontsevoye.ichuchu.service.agents.AgentAttachment
 import io.github.kontsevoye.ichuchu.service.agents.AgentChatState
 import io.github.kontsevoye.ichuchu.service.agents.DeckCapabilities
+import io.github.kontsevoye.ichuchu.service.agents.DeckModelSettings
 import io.github.kontsevoye.ichuchu.service.agents.DeckRow
 import io.github.kontsevoye.ichuchu.service.agents.DeckSession
 import io.github.kontsevoye.ichuchu.service.agents.DeckTimeline
@@ -94,12 +95,37 @@ ${location.replace('–', '-')}|note=[prior identity recovery and fixture covera
     @Test
     fun contextPercentageUsesExistingSpaceWithAndWithoutKeyboard() {
         show()
+        compose.runOnIdle { ui = ui.copy(currentModel = DeckModelSettings("gpt-6-astra", "max")) }
         atEnd()
         fun historyBounds() =
             compose.onNodeWithTag("agent_chat_history").fetchSemanticsNode().boundsInRoot
+        fun statusBounds(effort: String) {
+            val model =
+                compose.onNodeWithTag("agent_current_model").fetchSemanticsNode().boundsInRoot
+            val reasoning = compose.onNodeWithText(effort).fetchSemanticsNode().boundsInRoot
+            val context =
+                compose.onNodeWithTag("agent_context_remaining").fetchSemanticsNode().boundsInRoot
+            assertTrue("Model must retain visible width", model.width > 0)
+            assertTrue(
+                "Model, reasoning and context must not overlap",
+                model.right <= reasoning.left && reasoning.right <= context.left,
+            )
+            assertEquals(reasoning.center.y, context.center.y, 1f)
+        }
         val before = historyBounds()
-        compose.runOnIdle { ui = ui.copy(contextRemaining = 73) }
+        compose.runOnIdle {
+            ui =
+                ui.copy(
+                    contextRemaining = 73,
+                    currentModel = DeckModelSettings("gpt-6-astra", "max"),
+                )
+        }
         compose.onNodeWithContentDescription("Context remaining: 73 percent").assertIsDisplayed()
+        compose
+            .onNodeWithContentDescription("Model: gpt-6-astra, reasoning: max")
+            .assertIsDisplayed()
+        compose.onNodeWithText("max").assertIsDisplayed()
+        statusBounds("max")
         assertEquals(before, historyBounds())
         capture("context-header")
         openKeyboard()
@@ -109,6 +135,8 @@ ${location.replace('–', '-')}|note=[prior identity recovery and fixture covera
             compose.onAllNodes(hasSetTextAction()).onLast().fetchSemanticsNode().boundsInRoot
         compose.runOnIdle { ui = ui.copy(contextRemaining = 0) }
         compose.onNodeWithContentDescription("Context remaining: 0 percent").assertIsDisplayed()
+        compose.onNodeWithText("max").assertIsDisplayed()
+        statusBounds("max")
         assertEquals(withKeyboard, historyBounds())
         assertEquals(
             input,
@@ -119,18 +147,39 @@ ${location.replace('–', '-')}|note=[prior identity recovery and fixture covera
         compose.onNodeWithContentDescription("Context remaining: 100 percent").assertIsDisplayed()
         assertEquals(withKeyboard, historyBounds())
         capture("context-ime-full")
-        // The temporary longer sending label retains its space even at 320dp/200%.
+        // Status stays visible during sending without moving the composer or history.
         compose.runOnIdle { ui = ui.copy(sending = true) }
-        compose.onNodeWithTag("agent_context_remaining").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Context remaining: 100 percent").assertIsDisplayed()
+        compose
+            .onNodeWithContentDescription("Model: gpt-6-astra, reasoning: max")
+            .assertIsDisplayed()
         compose.onNodeWithText("sending…").assertIsDisplayed()
         assertEquals(withKeyboard, historyBounds())
         assertEquals(
             input,
             compose.onAllNodes(hasSetTextAction()).onLast().fetchSemanticsNode().boundsInRoot,
         )
-        compose.runOnIdle { ui = ui.copy(contextRemaining = null) }
+        compose.runOnIdle {
+            ui =
+                ui.copy(
+                    contextRemaining = null,
+                    currentModel = DeckModelSettings("gpt-6.1-sol", "high"),
+                )
+        }
         compose.onNodeWithTag("agent_context_remaining").assertDoesNotExist()
+        compose
+            .onNodeWithContentDescription("Model: gpt-6.1-sol, reasoning: high")
+            .assertIsDisplayed()
+        compose
+            .onNodeWithContentDescription("Model: gpt-6-astra, reasoning: max")
+            .assertDoesNotExist()
         assertEquals(withKeyboard, historyBounds())
+        compose.runOnIdle { ui = ui.copy(currentModel = null) }
+        compose.onNodeWithTag("agent_current_model").assertDoesNotExist()
+        assertTrue(
+            "Unknown status must release its compact space",
+            historyBounds().height >= withKeyboard.height,
+        )
     }
 
     private fun row(id: Int, body: String = "Message $id. " + "Synthetic chat text. ".repeat(6)) =
@@ -467,6 +516,7 @@ ${location.replace('–', '-')}|note=[prior identity recovery and fixture covera
         show()
         atEnd()
         openKeyboard()
+        compose.onNodeWithText("> Message").assertDoesNotExist()
         repeat(3) { index ->
             compose.runOnIdle {
                 ui =

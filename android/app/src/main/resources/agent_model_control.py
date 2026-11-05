@@ -41,6 +41,15 @@ def plain_frame(frame):
     return re.sub(r'\x1b\[[0-9;:]*[A-Za-z]', '', frame)
 
 
+def ordinary_footer(line, allow_queue=False):
+    """Known passive hints, including shared-server agent navigation, never dialogs."""
+    warning = r'⚠ \d+(?: warnings?)? · f2(?: to view)?'
+    hint = r'(?:← for agents(?: · \? for shortcuts)?|\? for shortcuts)'
+    if allow_queue:
+        hint = r'(?:' + hint + r'|tab to queue(?: message)?)'
+    return bool(re.fullmatch(r'(?:' + hint + r')(?:\s+' + warning + r')?|' + warning, line))
+
+
 def ready_frame(frame, expected='Ask Codex to do anything'):
     """Fail closed on busy, unknown footer, menus, multiline input and drafts."""
     raw_rows = frame.splitlines()
@@ -66,9 +75,7 @@ def ready_frame(frame, expected='Ask Codex to do anything'):
         model_line and ' · ' in tail[0] and tail[0].endswith('…')))
     if not 1 <= len(tail) <= 2 or not standard_footer or not model_line:
         raise Refused('Cannot verify an empty Codex composer. Check the terminal.')
-    allowed_footer = tail[-1].startswith('? for shortcuts') or (
-        expected.startswith('/model ') and tail[-1] == 'tab to queue message') or bool(
-            re.fullmatch(r'⚠ \d+(?: warnings?)? · f2(?: to view)?', tail[-1]))
+    allowed_footer = ordinary_footer(tail[-1], allow_queue=expected.startswith('/model '))
     if len(tail) == 2 and not allowed_footer:
         raise Refused('Close the terminal menu before changing the model.')
     return (model_line.group(1).lower(), model_line.group(2).lower()) if model_line else ('', '')
@@ -139,8 +146,7 @@ def input_frame(frame, expected=None):
     if footer is None:
         raise Refused('Cannot verify the Codex composer. Open the terminal.')
     tail = [line.strip() for line in rows[footer + 1:] if line.strip()]
-    if len(tail) > 1 or any(not (line.startswith('? for shortcuts') or
-            line.startswith('tab to queue message') or re.match(r'^⚠ \d+.*f2', line)) for line in tail):
+    if len(tail) > 1 or any(not ordinary_footer(line, allow_queue=True) for line in tail):
         raise Refused('Close the terminal menu before sending.')
     body = '\n'.join([rows[index][1:].strip()] + [line[2:].rstrip() if line.startswith('  ') else line.rstrip()
                      for line in rows[index + 1:footer]]).strip()
@@ -157,6 +163,15 @@ def input_frame(frame, expected=None):
         if not same and not (len(expected) > 1000 and pasted):
             raise Refused('The pasted message could not be verified. Check the terminal before trying again.')
     return rows[footer]
+
+
+def frame_model(frame):
+    """Read current settings without treating drafts or busy turns as mutations."""
+    for line in reversed(plain_frame(frame).splitlines()[-4:]):
+        match = re.match(r'^\s+(\S+)\s+(none|minimal|low|medium|high|xhigh|max|ultra)\s+· ', line, re.I)
+        if match:
+            return dict(model=match[1].lower(), effort=match[2].lower())
+    return {}
 
 
 def context_percent(session, frame):
@@ -358,7 +373,8 @@ def control(executable, profile, session_id, model='', effort='', operation='mod
         return run(tmux + ['capture-pane', '-p', '-J', '-S', '-200', '-t', pane])
 
     if operation == 'context':
-        return dict(remaining=context_percent(session, capture()))
+        frame = capture()
+        return dict(remaining=context_percent(session, frame), **frame_model(frame))
     if operation == 'receipt':
         capture()  # The pane identity must still match before resolving a pending send.
         return native_receipt(session, deck, pid, payload)
